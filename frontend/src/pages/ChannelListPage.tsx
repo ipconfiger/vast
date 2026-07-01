@@ -6,7 +6,8 @@ import { MessageInput } from '../components/MessageInput'
 import { TypingIndicator } from '../components/TypingIndicator'
 import { useChannelStore } from '../stores/channelStore'
 import { useChannel } from '../api/channels'
-import { useWebSocket } from '../api/ws'
+import { useWebSocket } from '../hooks/useWebSocket'
+import { useCursorSync } from '../hooks/useCursorSync'
 import { SelectChannelPrompt } from '../components/EmptyState'
 
 export function ChannelListPage() {
@@ -15,6 +16,7 @@ export function ChannelListPage() {
   const setCurrentChannel = useChannelStore((s) => s.setCurrentChannel)
 
   useWebSocket()
+  useCursorSync()
 
   useEffect(() => {
     if (channelId) {

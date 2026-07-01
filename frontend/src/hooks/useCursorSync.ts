@@ -34,7 +34,8 @@ export function useCursorSync(): void {
         const endpoint = cursor
           ? `/channels/${channelId}/messages?cursor=${encodeURIComponent(cursor)}`
           : `/channels/${channelId}/messages`
-        const messages = await apiClient<Message[]>(endpoint)
+        const data = await apiClient<{ messages: Message[]; next_cursor: number; has_more: boolean }>(endpoint)
+        const messages = data.messages
         if (messages.length === 0) return
 
         // Merge with existing messages, dedup by msg_id

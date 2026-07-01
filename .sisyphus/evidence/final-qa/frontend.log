@@ -104,3 +104,6 @@ Error: connect ECONNREFUSED 127.0.0.1:3000
 Error: connect ECONNREFUSED 127.0.0.1:3000
     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1611:16)
 17:34:51 [vite] (client) hmr update /src/pages/RegisterPage.tsx, /src/index.css
+17:41:06 [vite] (client) hmr update /src/pages/ChannelListPage.tsx, /src/index.css
+17:41:07 [vite] (client) hmr update /src/pages/ChannelListPage.tsx, /src/index.css
+17:41:13 [vite] (client) hmr update /src/index.css, /src/pages/ChannelListPage.tsx, /src/components/ChannelSidebar.tsx, /src/components/MessageList.tsx, /src/components/MessageInput.tsx

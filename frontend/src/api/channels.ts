@@ -43,9 +43,9 @@ export function useMessages(channelId: string | null) {
   return useQuery({
     queryKey: ['messages', channelId],
     queryFn: async () => {
-      const messages = await apiClient<Message[]>(`/channels/${channelId}/messages`)
-      setMessages(channelId!, messages)
-      return messages
+      const data = await apiClient<{ messages: Message[]; next_cursor: number; has_more: boolean }>(`/channels/${channelId}/messages`)
+      setMessages(channelId!, data.messages, data.next_cursor?.toString() ?? null)
+      return data.messages
     },
     enabled: !!channelId,
   })
