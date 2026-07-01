@@ -103,3 +103,4 @@ Error: connect ECONNREFUSED 127.0.0.1:3000
 14:24:04 [vite] ws proxy error:
 Error: connect ECONNREFUSED 127.0.0.1:3000
     at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1611:16)
+17:34:51 [vite] (client) hmr update /src/pages/RegisterPage.tsx, /src/index.css

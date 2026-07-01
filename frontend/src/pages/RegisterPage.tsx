@@ -68,8 +68,10 @@ export default function RegisterPage() {
     }
     if (!password) {
       errors.password = 'Password is required'
-    } else if (password.length < 6) {
-      errors.password = 'Password must be at least 6 characters'
+    } else if (password.length < 8) {
+      errors.password = 'Password must be at least 8 characters'
+    } else if (!/[a-zA-Z]/.test(password) || !/\d/.test(password)) {
+      errors.password = 'Password must contain both letters and digits'
     }
     if (!inviteCode.trim()) {
       errors.inviteCode = 'Invite code is required'
