@@ -1,0 +1,46 @@
+{
+  "task": "T14: Message send + cursor pagination API",
+  "status": "completed",
+  "files_created": [
+    "src/api/mod.rs",
+    "src/api/messages.rs"
+  ],
+  "files_modified": [
+    "src/main.rs"
+  ],
+  "routes_registered": {
+    "POST /api/channels/{channel_id}/messages": "api::messages::send_message",
+    "GET /api/channels/{channel_id}/messages": "api::messages::get_messages"
+  },
+  "endpoints": {
+    "send_message": {
+      "method": "POST",
+      "path": "/api/channels/{channel_id}/messages",
+      "auth": "required (AuthenticatedUser)",
+      "validation": [
+        "msg_type must be one of: text, file, code",
+        "payload must be valid JSON (enforced by serde_json::Value)",
+        "channel must exist and not be archived",
+        "user must be a channel member"
+      ],
+      "response": "201 Created with message JSON including cursor id"
+    },
+    "get_messages": {
+      "method": "GET",
+      "path": "/api/channels/{channel_id}/messages",
+      "auth": "required (AuthenticatedUser)",
+      "query_params": {
+        "after_cursor": { "type": "i64", "default": 0, "description": "Minimum message id (cursor)" },
+        "limit": { "type": "i64", "default": 50, "max": 100, "description": "Page size" }
+      },
+      "response": {
+        "messages": "Array<MessageResponse>",
+        "next_cursor": "i64 — last id in current page",
+        "has_more": "bool — true if more messages exist"
+      },
+      "query": "WHERE channel_id=? AND id>? AND deleted_at IS NULL ORDER BY id ASC LIMIT ?"
+    }
+  },
+  "test_result": "cargo test: 25 passed",
+  "lsp_diagnostics": "clean (no errors in messages.rs)"
+}

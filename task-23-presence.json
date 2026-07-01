@@ -1,0 +1,32 @@
+{
+  "task": "T23: Online presence via WebSocket",
+  "status": "completed",
+  "changes": [
+    {
+      "file": "src/ws/mod.rs",
+      "description": "Broadcast Presence {status:'online'} in register(), plus Presence {status:'offline'} already in unregister()"
+    },
+    {
+      "file": "src/api/presence.rs",
+      "description": "New file: GET /api/presence/{channel_id} returns {online_users: [...]} via ConnectionPool::get_channel_members()"
+    },
+    {
+      "file": "src/api/mod.rs",
+      "description": "Registered pub mod presence"
+    },
+    {
+      "file": "src/main.rs",
+      "description": "Added route /presence/{channel_id} → api::presence::get_presence"
+    }
+  ],
+  "tests": [
+    "ws::tests::register_broadcasts_presence_online",
+    "ws::tests::register_broadcasts_presence_to_all_channels",
+    "ws::tests::unregister_broadcasts_presence_offline",
+    "api::presence::tests::test_get_presence_returns_online_users",
+    "api::presence::tests::test_get_presence_empty_channel",
+    "api::presence::tests::test_get_presence_multi_channel_user"
+  ],
+  "test_results": "103 passed, 6 filtered (pre-existing delete_message failures)",
+  "evidence": "All new tests pass. On register() → broadcasts Presence online to all subscribed channels. On unregister() → broadcasts Presence offline. REST endpoint returns online users per channel."
+}

@@ -1,0 +1,38 @@
+[Unit]
+Description=IM Server — Real-time messaging service
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=im-server
+Group=im-server
+
+ExecStart=/opt/im-server/im-server
+WorkingDirectory=/opt/im-server
+EnvironmentFile=/opt/im-server/.env
+
+# Restart behavior
+Restart=always
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/im-server /var/log/im-server
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=im-server
+
+[Install]
+WantedBy=multi-user.target

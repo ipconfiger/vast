@@ -1,0 +1,72 @@
+warning: unused import: `Serialize`
+ --> src/api/auth.rs:7:26
+  |
+7 | use serde::{Deserialize, Serialize};
+  |                          ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `get`
+   --> src/api/dm.rs:198:25
+    |
+198 |     use axum::routing::{get, post};
+    |                         ^^^
+
+warning: unused import: `patch`
+  --> src/api/mod.rs:13:35
+   |
+13 | use axum::{routing::{delete, get, patch, post, put}, Router};
+   |                                   ^^^^^
+
+warning: unused imports: `http::Uri`, `patch`, and `response::Redirect`
+  --> src/lib.rs:10:5
+   |
+10 |     http::Uri,
+   |     ^^^^^^^^^
+11 |     response::Redirect,
+   |     ^^^^^^^^^^^^^^^^^^
+12 |     routing::{delete, get, patch, post, put},
+   |                            ^^^^^
+
+warning: field `username` is never read
+  --> src/api/auth.rs:40:5
+   |
+38 | struct UserRow {
+   |        ------- field in this struct
+39 |     id: String,
+40 |     username: String,
+   |     ^^^^^^^^
+   |
+   = note: `UserRow` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: multiple fields are never read
+  --> src/api/search.rs:31:5
+   |
+30 | struct SearchResultRow {
+   |        --------------- fields in this struct
+31 |     id: i64,
+   |     ^^
+32 |     msg_id: String,
+   |     ^^^^^^
+33 |     channel_id: String,
+34 |     sender_id: String,
+   |     ^^^^^^^^^
+35 |     msg_type: String,
+   |     ^^^^^^^^
+36 |     payload: String,
+37 |     thread_parent_id: Option<i64>,
+   |     ^^^^^^^^^^^^^^^^
+38 |     deleted_at: Option<i64>,
+   |     ^^^^^^^^^^
+39 |     edited_at: Option<i64>,
+   |     ^^^^^^^^^
+   |
+   = note: `SearchResultRow` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: `im-server` (lib) generated 6 warnings (run `cargo fix --lib -p im-server` to apply 4 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.09s
+     Running `target/release/im-server`
+[2m2026-07-01T06:16:22.679424Z[0m [32m INFO[0m ThreadId(01) [2mim_server[0m[2m:[0m [2m29:[0m Starting IM Server...
+[2m2026-07-01T06:16:22.688509Z[0m [32m INFO[0m ThreadId(01) [2mim_server::db[0m[2m:[0m [2m46:[0m PRAGMA journal_mode = wal
+[2m2026-07-01T06:16:22.688908Z[0m [32m INFO[0m ThreadId(01) [2mim_server[0m[2m:[0m [2m56:[0m IM Server listening on http://0.0.0.0:3000

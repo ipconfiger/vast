@@ -1,0 +1,41 @@
+{
+  "task": "T24: Typing indicators via WebSocket",
+  "status": "completed",
+  "test_results": {
+    "total": 27,
+    "passed": 27,
+    "failed": 0,
+    "filtered_out": 82,
+    "duration": "0.01s"
+  },
+  "typing_tests": [
+    "ws::mod::tests::record_typing_adds_to_state",
+    "ws::mod::tests::remove_typing_clears_state",
+    "ws::mod::tests::typing_timeout_cleans_stale_entries",
+    "ws::mod::tests::typing_recent_not_cleaned",
+    "ws::mod::tests::multiple_typists_in_same_channel",
+    "ws::mod::tests::typing_broadcast_delivers_to_other_users"
+  ],
+  "implementation": {
+    "file": "src/ws/mod.rs",
+    "changes": [
+      "Added typing_timeouts DashMap<String, Instant> to ConnectionPool",
+      "Added record_typing() method - records typing state and lazily cleans stale entries",
+      "Added remove_typing() method - clears typing state on TypingStop",
+      "Added cleanup_stale_typing() method - removes entries older than 5 seconds",
+      "TypingStart handler: records typing state + broadcasts Typing event to channel",
+      "TypingStop handler: removes typing state (replaces previous no-op)",
+      "Sender exclusion: broadcast receive loop skips Typing events from self",
+      "Heartbeat periodic cleanup: calls cleanup_stale_typing() every heartbeat cycle"
+    ],
+    "protocol_events_used": {
+      "ClientEvent::TypingStart": { "channel_id": "String" },
+      "ClientEvent::TypingStop": { "channel_id": "String" },
+      "ServerEvent::Typing": {
+        "channel_id": "String",
+        "user_id": "String",
+        "thread_parent_cursor": "Option<i64>"
+      }
+    }
+  }
+}

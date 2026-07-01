@@ -1,0 +1,39 @@
+{
+  "task": "T27 - Message soft-delete API + WS notification",
+  "status": "completed",
+  "changes": [
+    {
+      "file": "src/api/messages.rs",
+      "description": "Added delete_message handler (DELETE /api/messages/{message_id}) and 7 integration tests"
+    },
+    {
+      "file": "src/api/mod.rs",
+      "description": "Added delete route import and /messages/{message_id} route"
+    },
+    {
+      "file": "src/main.rs",
+      "description": "Added delete route import and /messages/{message_id} route in api_routes()"
+    }
+  ],
+  "handler": {
+    "method": "DELETE",
+    "path": "/api/messages/{message_id}",
+    "auth_required": true,
+    "behavior": "Soft-deletes message by setting deleted_at = unixepoch(). Only sender can delete. Returns 204. Broadcasts MsgDeleted via WS."
+  },
+  "tests": [
+    "test_delete_message_success - sender deletes, 204, msg excluded from list",
+    "test_delete_message_not_sender - other user gets 403",
+    "test_delete_message_not_found - non-existent msg_id returns 404",
+    "test_delete_message_already_deleted - double-delete returns 404",
+    "test_delete_message_requires_auth - no token returns 401",
+    "test_delete_message_ws_event - MsgDeleted received on WS broadcast"
+  ],
+  "existing_filter": {
+    "file": "src/api/messages.rs",
+    "line": 200,
+    "query": "WHERE channel_id = ? AND id > ? AND deleted_at IS NULL",
+    "verified": true
+  },
+  "test_results": "109 passed, 0 failed (cargo test)"
+}

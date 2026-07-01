@@ -1,0 +1,9 @@
+=== Graceful Shutdown Test ===
+Timestamp: 2026-07-01T05:24:53Z
+Signal sent: SIGTERM
+Expected log: "Shutdown signal received, draining connections..."
+Result: Server exited cleanly within 30s timeout
+CORS headers present on OPTIONS preflight:
+  - access-control-allow-methods: *
+  - access-control-allow-headers: *
+  - access-control-allow-origin: *

@@ -1,0 +1,35 @@
+[package]
+name = "im-server"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+
+[dependencies]
+axum = { version = "0.8.9", features = ["ws", "multipart"] }
+tokio = { version = "1.52.3", features = ["full"] }
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "sqlite", "chrono", "uuid", "migrate"] }
+rust-embed = { version = "8.11.0", features = ["compression", "include-exclude"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+jsonwebtoken = { version = "10.4.0", features = ["aws_lc_rs"] }
+argon2 = "0.5.3"
+tower = "0.5.3"
+tower-http = { version = "0.7.0", features = ["cors", "limit", "trace", "timeout"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json", "fmt"] }
+tracing-log = "0.2"
+uuid = { version = "1.23.4", features = ["v4", "v7", "serde", "fast-rng"] }
+chrono = { version = "0.4.45", features = ["serde"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+dotenvy = "0.15.7"
+mime = "0.3"
+mime_guess = "2.0.5"
+dashmap = "6.1"
+fs2 = "0.4"
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+rustls = "0.23"
+rustls-pemfile = "2.2"
+
+[dev-dependencies]
+tokio-tungstenite = "0.24"
+futures-util = "0.3"

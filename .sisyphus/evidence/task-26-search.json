@@ -1,0 +1,59 @@
+{
+  "task": "T26: FTS5 Full-Text Search API",
+  "status": "pass",
+  "tests": [
+    {
+      "name": "test_search_exact_match",
+      "status": "pass",
+      "description": "Search for 'production' finds exactly 1 matching message with snippet highlighting"
+    },
+    {
+      "name": "test_search_prefix_match",
+      "status": "pass",
+      "description": "Search for 'devel*' prefix matches 'development' via FTS5 prefix query"
+    },
+    {
+      "name": "test_search_across_channels",
+      "status": "pass",
+      "description": "Search across all channels finds matching messages in multiple channels"
+    },
+    {
+      "name": "test_search_channel_filter",
+      "status": "pass",
+      "description": "channel_id parameter narrows search to a single channel"
+    },
+    {
+      "name": "test_search_no_results",
+      "status": "pass",
+      "description": "Unmatched query returns 0 results"
+    },
+    {
+      "name": "test_search_deleted_messages_excluded",
+      "status": "pass",
+      "description": "Messages with deleted_at IS NOT NULL are excluded from results"
+    },
+    {
+      "name": "test_search_non_member_excluded",
+      "status": "pass",
+      "description": "Users cannot search messages in channels they do not belong to"
+    },
+    {
+      "name": "test_search_requires_auth",
+      "status": "pass",
+      "description": "Unauthenticated requests return 401 UNAUTHORIZED"
+    },
+    {
+      "name": "test_search_empty_query",
+      "status": "pass",
+      "description": "Empty q parameter returns 400 BAD_REQUEST"
+    },
+    {
+      "name": "test_search_limit",
+      "status": "pass",
+      "description": "Limit parameter controls number of results returned"
+    }
+  ],
+  "summary": "All 10 search tests pass. FTS5 BM25 ranking, snippet with <mark> highlighting, permission filtering via channel_members, deleted_at exclusion, and channel-specific filtering all verified.",
+  "endpoint": "GET /api/search?q=keyword&channel_id=&limit=20",
+  "query_used": "SELECT m.*, snippet(messages_fts, 0, '<mark>', '</mark>', '...', 32) AS snippet FROM messages m JOIN messages_fts fts ON m.rowid = fts.rowid WHERE messages_fts MATCH ? AND m.deleted_at IS NULL AND m.channel_id IN (SELECT channel_id FROM channel_members WHERE user_id = ?) ORDER BY bm25(messages_fts) LIMIT ?"
+}

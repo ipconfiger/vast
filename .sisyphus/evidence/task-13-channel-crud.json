@@ -1,0 +1,44 @@
+{
+  "task": "T13: Channel CRUD API",
+  "status": "completed",
+  "files_created": [
+    "src/api/channels.rs"
+  ],
+  "files_modified": [
+    "src/api/mod.rs",
+    "src/main.rs",
+    "src/error.rs",
+    "src/api/auth.rs"
+  ],
+  "routes_added": [
+    "GET /api/channels",
+    "POST /api/channels",
+    "GET /api/channels/{id}",
+    "PATCH /api/channels/{id}"
+  ],
+  "tests_passed": 53,
+  "evidence": "cargo test passes with 53 tests",
+  "handlers": {
+    "create_channel": "POST /api/channels — validates name (1-80 chars), inserts channel + owner as member, returns 201",
+    "list_channels": "GET /api/channels — lists channels where user is member, returns role",
+    "get_channel": "GET /api/channels/{id} — returns channel detail with role, 404 if not found, 403 if not member",
+    "update_channel": "PATCH /api/channels/{id} — owner-only update of name/description, 403 for non-owner"
+  },
+  "tests": [
+    "test_create_channel_success",
+    "test_create_channel_minimal",
+    "test_create_channel_empty_name",
+    "test_create_channel_name_too_long",
+    "test_create_channel_requires_auth",
+    "test_list_channels",
+    "test_list_channels_excludes_non_member",
+    "test_get_channel_success",
+    "test_get_channel_not_found",
+    "test_get_channel_not_member",
+    "test_update_channel_success",
+    "test_update_channel_partial",
+    "test_update_channel_not_owner",
+    "test_update_channel_not_found",
+    "test_update_channel_requires_auth"
+  ]
+}

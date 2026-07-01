@@ -1,0 +1,2 @@
+-- SQLite does not support DROP COLUMN in older versions.
+-- This migration is intentionally empty; to revert, restore from backup.

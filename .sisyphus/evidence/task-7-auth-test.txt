@@ -1,0 +1,28 @@
+Task 7: JWT Authentication + Argon2id Password Hashing
+=======================================================
+Status: ALL TESTS PASSED
+
+Test Results:
+  cargo test auth::tests -- --nocapture
+  4 passed, 2 filtered out (1 suite, 0.66s)
+
+Test list:
+  - test_password_hash_roundtrip    ... ok
+  - test_token_creation_and_validation ... ok
+  - test_token_expiry               ... ok
+  - test_refresh_token_rejection    ... ok
+
+Full suite:
+  cargo test
+  6 passed (1 suite, 0.66s)
+
+Files created:
+  - src/auth/mod.rs        - JWT auth (Claims, TokenPair, create_token_pair, validate_token,
+                             refresh_access_token, hash_password, verify_password) + 4 unit tests
+  - src/auth/middleware.rs - AuthenticatedUser extractor (FromRequestParts impl for Axum)
+  - src/main.rs            - added mod auth;
+
+Dependencies added:
+  - rand_core = { version = "0.6", features = ["getrandom"] }  (for OsRng in salt generation)
+
+Date: 2026-07-01

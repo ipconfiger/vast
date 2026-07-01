@@ -1,0 +1,30 @@
+T16 — Auth middleware + channel member management
+=================================================
+Date: 2026-07-01
+
+Files modified/created:
+- src/auth/middleware.rs — added require_membership(), require_role() functions
+- src/api/channel_members.rs — NEW: 4 endpoints for member management
+- src/api/mod.rs — added channel_members module, nested routes under /channels
+- src/main.rs — added `mod api;` and .merge(api::routes())
+
+Endpoints registered (under /api):
+  POST   /api/channels/{channel_id}/members        — add member (owner/admin)
+  GET    /api/channels/{channel_id}/members         — list members (any member)
+  DELETE /api/channels/{channel_id}/members/{user_id} — remove/leave (owner or self)
+  PATCH  /api/channels/{channel_id}/members/{user_id}/role — update role (owner only)
+
+Authorization logic:
+  require_membership()        — checks channel_members table, 403 if not member
+  require_role(allowed_roles) — checks role in channel_members, 403 if insufficient
+
+Edge cases handled:
+  - Owner cannot leave channel without transferring ownership first
+  - Owner cannot remove another owner
+  - Cannot change owner's role (except self-role-change by owner)
+  - Only owners can grant owner/admin roles to new members
+  - Role validation: must be one of owner/admin/member
+  - 204 No Content on successful deletion
+  - 403 Forbidden with descriptive messages for all permission failures
+
+Verification: cargo test passes (only pre-existing errors in ws/mod.rs and missing channels.rs)

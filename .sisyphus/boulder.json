@@ -1,0 +1,299 @@
+{
+  "schema_version": 2,
+  "active_work_id": "im-enterprise-plan-9df760ab",
+  "works": {
+    "im-enterprise-plan-9df760ab": {
+      "work_id": "im-enterprise-plan-9df760ab",
+      "active_plan": "/home/alex/Projects/vast/.sisyphus/plans/im-enterprise-plan.md",
+      "plan_name": "im-enterprise-plan",
+      "status": "completed",
+      "started_at": "2026-07-01T05:10:08.099Z",
+      "updated_at": "2026-07-01T06:22:08.296Z",
+      "session_ids": [
+        "ses_0e4359b3effewTxSiGwt5Y4QbG"
+      ],
+      "session_origins": {
+        "ses_0e4359b3effewTxSiGwt5Y4QbG": "direct"
+      },
+      "agent": "atlas",
+      "task_sessions": {
+        "todo:1": {
+          "task_key": "todo:1",
+          "task_label": "1",
+          "task_title": "Rust 项目骨架 + Cargo.toml 依赖",
+          "session_id": "ses_0e3e8b9f2ffeSam7q44eTmsl4x",
+          "agent": "Sisyphus-Junior",
+          "category": "quick",
+          "updated_at": "2026-07-01T05:14:19.453Z",
+          "started_at": "2026-07-01T05:13:35.781Z",
+          "status": "completed",
+          "ended_at": "2026-07-01T05:14:19.453Z",
+          "elapsed_ms": 43672
+        },
+        "todo:2": {
+          "task_key": "todo:2",
+          "task_label": "2",
+          "task_title": "React 项目骨架 + package.json",
+          "session_id": "ses_0e3e653bcffe3XphfT3KOyXHJb",
+          "agent": "Sisyphus-Junior",
+          "category": "quick",
+          "updated_at": "2026-07-01T05:22:02.647Z",
+          "started_at": "2026-07-01T05:18:19.496Z",
+          "status": "completed",
+          "ended_at": "2026-07-01T05:22:02.647Z",
+          "elapsed_ms": 223151
+        },
+        "todo:3": {
+          "task_key": "todo:3",
+          "task_label": "3",
+          "task_title": "TailwindCSS v4 + Vite 配置完善",
+          "session_id": "ses_0e3df35b2ffeGIf62PCbkPe8iC",
+          "agent": "Sisyphus-Junior",
+          "category": "quick",
+          "updated_at": "2026-07-01T05:26:21.041Z",
+          "started_at": "2026-07-01T05:24:42.647Z",
+          "status": "completed",
+          "ended_at": "2026-07-01T05:26:21.041Z",
+          "elapsed_ms": 98394
+        },
+        "todo:12": {
+          "task_key": "todo:12",
+          "task_label": "12",
+          "task_title": "用户注册/登录 API",
+          "session_id": "ses_0e3db322fffeGdIocTMhZxsSUk",
+          "agent": "Sisyphus-Junior",
+          "category": "quick",
+          "updated_at": "2026-07-01T05:34:08.654Z",
+          "started_at": "2026-07-01T05:33:52.228Z",
+          "status": "completed",
+          "ended_at": "2026-07-01T05:34:08.654Z",
+          "elapsed_ms": 16426
+        },
+        "todo:17": {
+          "task_key": "todo:17",
+          "task_label": "17",
+          "task_title": "Channel 存档/取消存档",
+          "session_id": "ses_0e3d43e57ffe7CStbIDlqij9Pu",
+          "agent": "Sisyphus-Junior",
+          "category": "quick",
+          "updated_at": "2026-07-01T05:37:53.672Z",
+          "started_at": "2026-07-01T05:36:36.354Z",
+          "status": "completed",
+          "ended_at": "2026-07-01T05:37:53.672Z",
+          "elapsed_ms": 77318
+        },
+        "todo:20": {
+          "task_key": "todo:20",
+          "task_label": "20",
+          "task_title": "加入申请 + 邀请审批 API",
+          "session_id": "ses_0e3d0c79affeANjTOiulXFXfZA",
+          "agent": "Sisyphus-Junior",
+          "category": "quick",
+          "updated_at": "2026-07-01T05:52:35.379Z",
+          "started_at": "2026-07-01T05:44:46.265Z",
+          "status": "completed",
+          "ended_at": "2026-07-01T05:52:35.379Z",
+          "elapsed_ms": 469114
+        },
+        "todo:28": {
+          "task_key": "todo:28",
+          "task_label": "28",
+          "task_title": "消息线程 API",
+          "session_id": "ses_0e3c348c9ffek1KNXQUJ3C1xro",
+          "agent": "Sisyphus-Junior",
+          "category": "unspecified-low",
+          "updated_at": "2026-07-01T05:57:31.192Z",
+          "started_at": "2026-07-01T05:55:22.905Z",
+          "status": "completed",
+          "ended_at": "2026-07-01T05:57:31.192Z",
+          "elapsed_ms": 128287
+        },
+        "todo:34": {
+          "task_key": "todo:34",
+          "task_label": "34",
+          "task_title": "TLS/HTTPS 支持",
+          "session_id": "ses_0e3beaf5fffeLi1UUDiiOUwap7",
+          "agent": "Sisyphus-Junior",
+          "category": "unspecified-high",
+          "updated_at": "2026-07-01T06:03:49.766Z",
+          "started_at": "2026-07-01T06:03:37.186Z",
+          "status": "completed",
+          "ended_at": "2026-07-01T06:03:49.766Z",
+          "elapsed_ms": 12580
+        },
+        "todo:37": {
+          "task_key": "todo:37",
+          "task_label": "37",
+          "task_title": "全量集成测试",
+          "session_id": "ses_0e3b916b0ffe0pHSCjFtMxU8ud",
+          "agent": "Sisyphus-Junior",
+          "category": "unspecified-high",
+          "updated_at": "2026-07-01T06:14:49.016Z",
+          "started_at": "2026-07-01T06:14:35.023Z",
+          "status": "completed",
+          "ended_at": "2026-07-01T06:14:49.016Z",
+          "elapsed_ms": 13993
+        },
+        "final-wave:f1": {
+          "task_key": "final-wave:f1",
+          "task_label": "F1",
+          "task_title": "**Plan Compliance Audit** — `oracle`",
+          "session_id": "ses_0e3aeff2affeNaX1i5j97RSjSQ",
+          "agent": "Sisyphus-Junior",
+          "started_at": "2026-07-01T06:17:19.093Z",
+          "status": "completed",
+          "updated_at": "2026-07-01T06:21:59.808Z",
+          "ended_at": "2026-07-01T06:21:59.808Z",
+          "elapsed_ms": 280715
+        }
+      },
+      "ended_at": "2026-07-01T06:22:08.296Z",
+      "elapsed_ms": 4320197
+    }
+  },
+  "active_plan": "/home/alex/Projects/vast/.sisyphus/plans/im-enterprise-plan.md",
+  "started_at": "2026-07-01T05:10:08.099Z",
+  "status": "completed",
+  "updated_at": "2026-07-01T06:22:08.296Z",
+  "session_ids": [
+    "ses_0e4359b3effewTxSiGwt5Y4QbG"
+  ],
+  "session_origins": {
+    "ses_0e4359b3effewTxSiGwt5Y4QbG": "direct"
+  },
+  "plan_name": "im-enterprise-plan",
+  "task_sessions": {
+    "todo:1": {
+      "task_key": "todo:1",
+      "task_label": "1",
+      "task_title": "Rust 项目骨架 + Cargo.toml 依赖",
+      "session_id": "ses_0e3e8b9f2ffeSam7q44eTmsl4x",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-07-01T05:14:19.453Z",
+      "started_at": "2026-07-01T05:13:35.781Z",
+      "status": "completed",
+      "ended_at": "2026-07-01T05:14:19.453Z",
+      "elapsed_ms": 43672
+    },
+    "todo:2": {
+      "task_key": "todo:2",
+      "task_label": "2",
+      "task_title": "React 项目骨架 + package.json",
+      "session_id": "ses_0e3e653bcffe3XphfT3KOyXHJb",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-07-01T05:22:02.647Z",
+      "started_at": "2026-07-01T05:18:19.496Z",
+      "status": "completed",
+      "ended_at": "2026-07-01T05:22:02.647Z",
+      "elapsed_ms": 223151
+    },
+    "todo:3": {
+      "task_key": "todo:3",
+      "task_label": "3",
+      "task_title": "TailwindCSS v4 + Vite 配置完善",
+      "session_id": "ses_0e3df35b2ffeGIf62PCbkPe8iC",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-07-01T05:26:21.041Z",
+      "started_at": "2026-07-01T05:24:42.647Z",
+      "status": "completed",
+      "ended_at": "2026-07-01T05:26:21.041Z",
+      "elapsed_ms": 98394
+    },
+    "todo:12": {
+      "task_key": "todo:12",
+      "task_label": "12",
+      "task_title": "用户注册/登录 API",
+      "session_id": "ses_0e3db322fffeGdIocTMhZxsSUk",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-07-01T05:34:08.654Z",
+      "started_at": "2026-07-01T05:33:52.228Z",
+      "status": "completed",
+      "ended_at": "2026-07-01T05:34:08.654Z",
+      "elapsed_ms": 16426
+    },
+    "todo:17": {
+      "task_key": "todo:17",
+      "task_label": "17",
+      "task_title": "Channel 存档/取消存档",
+      "session_id": "ses_0e3d43e57ffe7CStbIDlqij9Pu",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-07-01T05:37:53.672Z",
+      "started_at": "2026-07-01T05:36:36.354Z",
+      "status": "completed",
+      "ended_at": "2026-07-01T05:37:53.672Z",
+      "elapsed_ms": 77318
+    },
+    "todo:20": {
+      "task_key": "todo:20",
+      "task_label": "20",
+      "task_title": "加入申请 + 邀请审批 API",
+      "session_id": "ses_0e3d0c79affeANjTOiulXFXfZA",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-07-01T05:52:35.379Z",
+      "started_at": "2026-07-01T05:44:46.265Z",
+      "status": "completed",
+      "ended_at": "2026-07-01T05:52:35.379Z",
+      "elapsed_ms": 469114
+    },
+    "todo:28": {
+      "task_key": "todo:28",
+      "task_label": "28",
+      "task_title": "消息线程 API",
+      "session_id": "ses_0e3c348c9ffek1KNXQUJ3C1xro",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-low",
+      "updated_at": "2026-07-01T05:57:31.192Z",
+      "started_at": "2026-07-01T05:55:22.905Z",
+      "status": "completed",
+      "ended_at": "2026-07-01T05:57:31.192Z",
+      "elapsed_ms": 128287
+    },
+    "todo:34": {
+      "task_key": "todo:34",
+      "task_label": "34",
+      "task_title": "TLS/HTTPS 支持",
+      "session_id": "ses_0e3beaf5fffeLi1UUDiiOUwap7",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-07-01T06:03:49.766Z",
+      "started_at": "2026-07-01T06:03:37.186Z",
+      "status": "completed",
+      "ended_at": "2026-07-01T06:03:49.766Z",
+      "elapsed_ms": 12580
+    },
+    "todo:37": {
+      "task_key": "todo:37",
+      "task_label": "37",
+      "task_title": "全量集成测试",
+      "session_id": "ses_0e3b916b0ffe0pHSCjFtMxU8ud",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-07-01T06:14:49.016Z",
+      "started_at": "2026-07-01T06:14:35.023Z",
+      "status": "completed",
+      "ended_at": "2026-07-01T06:14:49.016Z",
+      "elapsed_ms": 13993
+    },
+    "final-wave:f1": {
+      "task_key": "final-wave:f1",
+      "task_label": "F1",
+      "task_title": "**Plan Compliance Audit** — `oracle`",
+      "session_id": "ses_0e3aeff2affeNaX1i5j97RSjSQ",
+      "agent": "Sisyphus-Junior",
+      "started_at": "2026-07-01T06:17:19.093Z",
+      "status": "completed",
+      "updated_at": "2026-07-01T06:21:59.808Z",
+      "ended_at": "2026-07-01T06:21:59.808Z",
+      "elapsed_ms": 280715
+    }
+  },
+  "agent": "atlas",
+  "ended_at": "2026-07-01T06:22:08.296Z",
+  "elapsed_ms": 4320197
+}

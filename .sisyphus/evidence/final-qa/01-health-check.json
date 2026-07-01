@@ -1,0 +1,1 @@
+{"scenario":1,"name":"Health Check","endpoint":"GET /api/health","expected_code":200,"actual_code":200,"response":{"status":"ok","db":"connected"},"result":"PASS"}

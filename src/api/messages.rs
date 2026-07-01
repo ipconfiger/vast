@@ -1,0 +1,869 @@
+use axum::{
+    extract::{Path, Query, State},
+    Json,
+};
+use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
+use std::sync::Arc;
+use uuid::Uuid;
+
+use crate::auth::middleware::AuthenticatedUser;
+use crate::db;
+use crate::error::AppError;
+use crate::ws::protocol::ServerEvent;
+use crate::AppState;
+
+// ---------------------------------------------------------------------------
+// Request / Response types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct SendMessageRequest {
+    pub msg_type: String,
+    pub payload: serde_json::Value,
+    #[serde(default)]
+    pub thread_parent_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListMessagesParams {
+    #[serde(default)]
+    pub after_cursor: i64,
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+}
+
+fn default_limit() -> i64 {
+    50
+}
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct MessageRow {
+    pub id: i64,
+    pub msg_id: String,
+    pub channel_id: String,
+    pub sender_id: String,
+    pub msg_type: String,
+    pub payload: String,
+    pub thread_parent_id: Option<i64>,
+    pub deleted_at: Option<i64>,
+    pub edited_at: Option<i64>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MessageResponse {
+    pub id: i64,
+    pub msg_id: String,
+    pub channel_id: String,
+    pub sender_id: String,
+    pub msg_type: String,
+    pub payload: serde_json::Value,
+    pub thread_parent_id: Option<i64>,
+    pub deleted_at: Option<i64>,
+    pub edited_at: Option<i64>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListMessagesResponse {
+    pub messages: Vec<MessageResponse>,
+    pub next_cursor: i64,
+    pub has_more: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+impl From<MessageRow> for MessageResponse {
+    fn from(row: MessageRow) -> Self {
+        let payload: serde_json::Value =
+            serde_json::from_str(&row.payload).unwrap_or_default();
+        Self {
+            id: row.id,
+            msg_id: row.msg_id,
+            channel_id: row.channel_id,
+            sender_id: row.sender_id,
+            msg_type: row.msg_type,
+            payload,
+            thread_parent_id: row.thread_parent_id,
+            deleted_at: row.deleted_at,
+            edited_at: row.edited_at,
+            created_at: row.created_at,
+        }
+    }
+}
+
+/// Validate the msg_type field is one of the allowed values.
+fn validate_msg_type(msg_type: &str) -> Result<(), AppError> {
+    match msg_type {
+        "text" | "file" | "code" => Ok(()),
+        other => Err(AppError::UnsupportedMediaType(format!(
+            "Invalid msg_type: '{other}'. Must be one of: text, file, code"
+        ))),
+    }
+}
+
+fn extract_preview(payload: &serde_json::Value) -> String {
+    payload
+        .get("text")
+        .and_then(|v| v.as_str())
+        .map(|s| {
+            let s = s.trim();
+            if s.len() > 100 {
+                format!("{}...", &s[..100])
+            } else {
+                s.to_string()
+            }
+        })
+        .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
+/// POST /api/channels/{channel_id}/messages
+///
+/// Requires authentication. Verifies user is a channel member and the channel
+/// is not archived. Inserts a new message and returns it with 201 Created.
+pub async fn send_message(
+    auth: AuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+    Path(channel_id): Path<String>,
+    Json(body): Json<SendMessageRequest>,
+) -> Result<(axum::http::StatusCode, Json<MessageResponse>), AppError> {
+    let user_id = auth.0;
+
+    validate_msg_type(&body.msg_type)?;
+
+    let is_archived: (bool,) = sqlx::query_as(
+        "SELECT is_archived FROM channels WHERE id = ?",
+    )
+    .bind(&channel_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Channel not found".to_string()))?;
+
+    if is_archived.0 {
+        return Err(AppError::Forbidden("Channel is archived".to_string()));
+    }
+
+    let _membership: (String,) = sqlx::query_as(
+        "SELECT role FROM channel_members WHERE channel_id = ? AND user_id = ?",
+    )
+    .bind(&channel_id)
+    .bind(&user_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::Forbidden("You are not a member of this channel".to_string()))?;
+
+    db::check_disk_space(&state.config.data_dir)
+        .map_err(|e| AppError::Internal(format!("Disk space check failed: {e}")))?;
+
+    let msg_id = Uuid::new_v4().to_string();
+    let payload_str = serde_json::to_string(&body.payload)
+        .map_err(|e| AppError::Internal(format!("Failed to serialize payload: {e}")))?;
+
+    let inserted: MessageRow = sqlx::query_as::<_, MessageRow>(
+        r#"
+        INSERT INTO messages (msg_id, channel_id, sender_id, msg_type, payload, thread_parent_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+        RETURNING id, msg_id, channel_id, sender_id, msg_type, payload,
+                  thread_parent_id, deleted_at, edited_at, created_at
+        "#,
+    )
+    .bind(&msg_id)
+    .bind(&channel_id)
+    .bind(&user_id)
+    .bind(&body.msg_type)
+    .bind(&payload_str)
+    .bind(body.thread_parent_id)
+    .fetch_one(&state.pool)
+    .await?;
+
+    let preview = extract_preview(&body.payload);
+    if let Some(parent_id) = body.thread_parent_id {
+        state.ws_pool.notify_channel(
+            &channel_id,
+            ServerEvent::ThreadReply {
+                channel_id: channel_id.clone(),
+                thread_parent_cursor: parent_id,
+                cursor: inserted.id,
+                sender_id: user_id,
+                preview,
+            },
+        );
+    } else {
+        state.ws_pool.notify_channel(
+            &channel_id,
+            ServerEvent::NewMsg {
+                channel_id: channel_id.clone(),
+                cursor: inserted.id,
+                sender_id: user_id,
+                msg_type: body.msg_type,
+                preview,
+            },
+        );
+    }
+
+    Ok((axum::http::StatusCode::CREATED, Json(inserted.into())))
+}
+
+/// GET /api/channels/{channel_id}/messages
+///
+/// Requires authentication. Returns paginated messages for a channel using
+/// cursor-based pagination. Messages are ordered by ascending cursor id.
+///
+/// Query params:
+///   - `after_cursor`: minimum message id (default 0)
+///   - `limit`:        max results (default 50, max 100)
+pub async fn get_messages(
+    auth: AuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+    Path(channel_id): Path<String>,
+    Query(params): Query<ListMessagesParams>,
+) -> Result<Json<ListMessagesResponse>, AppError> {
+    let _user_id = auth.0;
+
+    let limit = params.limit.clamp(1, 100);
+    let after_cursor = params.after_cursor.max(0);
+
+    let _ = sqlx::query_as::<_, (String,)>("SELECT id FROM channels WHERE id = ?")
+        .bind(&channel_id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Channel not found".to_string()))?;
+
+    let rows: Vec<MessageRow> = sqlx::query_as::<_, MessageRow>(
+        r#"
+        SELECT id, msg_id, channel_id, sender_id, msg_type, payload,
+               thread_parent_id, deleted_at, edited_at, created_at
+        FROM messages
+        WHERE channel_id = ? AND id > ? AND deleted_at IS NULL
+              AND thread_parent_id IS NULL
+        ORDER BY id ASC
+        LIMIT ?
+        "#,
+    )
+    .bind(&channel_id)
+    .bind(after_cursor)
+    .bind(limit + 1)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let has_more = (rows.len() as i64) > limit;
+    let messages: Vec<MessageResponse> = rows
+        .into_iter()
+        .take(limit as usize)
+        .map(MessageResponse::from)
+        .collect();
+
+    let next_cursor = messages
+        .last()
+        .map(|m| m.id)
+        .unwrap_or(after_cursor);
+
+    Ok(Json(ListMessagesResponse {
+        messages,
+        next_cursor,
+        has_more,
+    }))
+}
+
+/// GET /api/channels/{channel_id}/messages/{msg_id}/thread
+///
+/// Requires authentication. Returns paginated thread replies for a given
+/// parent message. Replies are ordered by ascending cursor id.
+///
+/// Query params:
+///   - `after_cursor`: minimum reply id (default 0)
+///   - `limit`:        max results (default 50, max 100)
+pub async fn get_thread(
+    auth: AuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+    Path((channel_id, msg_id)): Path<(String, i64)>,
+    Query(params): Query<ListMessagesParams>,
+) -> Result<Json<ListMessagesResponse>, AppError> {
+    let _user_id = auth.0;
+
+    let limit = params.limit.clamp(1, 100);
+    let after_cursor = params.after_cursor.max(0);
+
+    // Verify channel exists
+    let _ = sqlx::query_as::<_, (String,)>("SELECT id FROM channels WHERE id = ?")
+        .bind(&channel_id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Channel not found".to_string()))?;
+
+    // Verify parent message exists and is not deleted
+    let _ = sqlx::query_as::<_, (i64,)>(
+        "SELECT id FROM messages WHERE id = ? AND channel_id = ? AND deleted_at IS NULL",
+    )
+    .bind(msg_id)
+    .bind(&channel_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Parent message not found".to_string()))?;
+
+    let rows: Vec<MessageRow> = sqlx::query_as::<_, MessageRow>(
+        r#"
+        SELECT id, msg_id, channel_id, sender_id, msg_type, payload,
+               thread_parent_id, deleted_at, edited_at, created_at
+        FROM messages
+        WHERE channel_id = ? AND thread_parent_id = ? AND id > ? AND deleted_at IS NULL
+        ORDER BY id ASC
+        LIMIT ?
+        "#,
+    )
+    .bind(&channel_id)
+    .bind(msg_id)
+    .bind(after_cursor)
+    .bind(limit + 1)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let has_more = (rows.len() as i64) > limit;
+    let messages: Vec<MessageResponse> = rows
+        .into_iter()
+        .take(limit as usize)
+        .map(MessageResponse::from)
+        .collect();
+
+    let next_cursor = messages
+        .last()
+        .map(|m| m.id)
+        .unwrap_or(after_cursor);
+
+    Ok(Json(ListMessagesResponse {
+        messages,
+        next_cursor,
+        has_more,
+    }))
+}
+
+/// DELETE /api/messages/{message_id}
+pub async fn delete_message(
+    auth: AuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+    Path(message_id): Path<i64>,
+) -> Result<axum::http::StatusCode, AppError> {
+    let user_id = auth.0;
+
+    let (channel_id, sender_id, deleted_at): (String, String, Option<i64>) =
+        sqlx::query_as(
+            "SELECT channel_id, sender_id, deleted_at FROM messages WHERE id = ?",
+        )
+        .bind(message_id)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Message not found".to_string()))?;
+
+    if deleted_at.is_some() {
+        return Err(AppError::NotFound("Message not found".to_string()));
+    }
+
+    if sender_id != user_id {
+        return Err(AppError::Forbidden(
+            "You can only delete your own messages".to_string(),
+        ));
+    }
+
+    sqlx::query("UPDATE messages SET deleted_at = unixepoch() WHERE id = ?")
+        .bind(message_id)
+        .execute(&state.pool)
+        .await?;
+
+    state.ws_pool.notify_channel(
+        &channel_id,
+        ServerEvent::MsgDeleted {
+            channel_id: channel_id.clone(),
+            cursor: message_id,
+        },
+    );
+
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{header, Method, Request, StatusCode},
+        Router,
+    };
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    use crate::ws;
+    use crate::ws::protocol::ServerEvent;
+
+    /// Helper to build a test app with an in-memory database.
+    /// Returns (Router, pool, user_id, token, ws_pool).
+    async fn setup() -> (Router, sqlx::SqlitePool, String, String, Arc<ws::ConnectionPool>) {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("Failed to create in-memory DB");
+        sqlx::migrate!("db/migrations")
+            .run(&pool)
+            .await
+            .expect("Failed to run migrations");
+
+        // Create a test user
+        let user_id = Uuid::new_v4().to_string();
+        let password_hash =
+            crate::auth::hash_password("testpass").expect("Failed to hash password");
+        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)")
+            .bind(&user_id)
+            .bind("testuser")
+            .bind(&password_hash)
+            .execute(&pool)
+            .await
+            .expect("Failed to insert test user");
+
+        let secret = "test-secret";
+        // SAFETY: test-only; single-threaded, no concurrent readers
+        unsafe {
+            std::env::set_var("JWT_SECRET", secret);
+        }
+        let token = crate::auth::create_token_pair(&user_id, secret)
+            .expect("Failed to create token")
+            .access_token;
+
+        let ws_pool = Arc::new(ws::ConnectionPool::new());
+        let state = Arc::new(AppState {
+            pool: pool.clone(),
+            ws_pool: ws_pool.clone(),
+            config: crate::AppConfig {
+                data_dir: std::path::PathBuf::from("/tmp"),
+                jwt_secret: secret.to_string(),
+                invite_code: "TEST".to_string(),
+                tls_mode: crate::TlsMode::None,
+            },
+        });
+
+        let app = crate::api::routes().with_state(state);
+        (app, pool, user_id, token, ws_pool)
+    }
+
+    /// Helper to make an authenticated JSON request and return the response.
+    async fn request(
+        app: &mut Router,
+        method: Method,
+        uri: &str,
+        body: Option<Value>,
+        token: &str,
+    ) -> axum::response::Response {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json");
+
+        if !token.is_empty() {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {}", token));
+        }
+
+        let req = if let Some(b) = body {
+            builder
+                .body(Body::from(serde_json::to_string(&b).unwrap()))
+                .unwrap()
+        } else {
+            builder.body(Body::empty()).unwrap()
+        };
+
+        app.oneshot(req).await.unwrap()
+    }
+
+    /// Helper to create a channel via API and return its id.
+    async fn create_channel(app: &mut Router, token: &str) -> String {
+        let resp = request(
+            app,
+            Method::POST,
+            "/channels",
+            Some(json!({"name": "Test Channel"})),
+            token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        body["id"].as_str().unwrap().to_string()
+    }
+
+    /// Helper to send a message via API and return its id.
+    async fn send_message(app: &mut Router, channel_id: &str, token: &str) -> Value {
+        let resp = request(
+            app,
+            Method::POST,
+            &format!("/channels/{}/messages", channel_id),
+            Some(json!({"msg_type": "text", "payload": {"text": "hello"}})),
+            token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    // ── DELETE /messages/{message_id} ─────────────────────────────────
+
+    #[tokio::test]
+    async fn test_delete_message_success() {
+        let (mut app, _, _, token, _ws_pool) = setup().await;
+        let channel_id = create_channel(&mut app, &token).await;
+        let msg = send_message(&mut app, &channel_id, &token).await;
+        let msg_id = msg["id"].as_i64().unwrap();
+
+        let resp = request(
+            &mut app,
+            Method::DELETE,
+            &format!("/messages/{}", msg_id),
+            None,
+            &token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        let list_resp = request(
+            &mut app,
+            Method::GET,
+            &format!("/channels/{}/messages", channel_id),
+            None,
+            &token,
+        )
+        .await;
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let list_body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(list_resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let messages = list_body["messages"].as_array().unwrap();
+        assert!(
+            messages.iter().all(|m| m["id"] != msg_id),
+            "deleted message should not appear in list"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_message_not_sender() {
+        let (mut app, pool, _user_id, token1, _ws_pool) = setup().await;
+        let channel_id = create_channel(&mut app, &token1).await;
+        let msg = send_message(&mut app, &channel_id, &token1).await;
+        let msg_id = msg["id"].as_i64().unwrap();
+
+        let user2_id = Uuid::new_v4().to_string();
+        let pw = crate::auth::hash_password("pass2").unwrap();
+        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)")
+            .bind(&user2_id)
+            .bind("user2")
+            .bind(&pw)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let secret = "test-secret";
+        let token2 = crate::auth::create_token_pair(&user2_id, secret)
+            .unwrap()
+            .access_token;
+
+        let resp = request(
+            &mut app,
+            Method::DELETE,
+            &format!("/messages/{}", msg_id),
+            None,
+            &token2,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_delete_message_not_found() {
+        let (mut app, _, _, token, _) = setup().await;
+        let resp = request(
+            &mut app,
+            Method::DELETE,
+            "/messages/99999",
+            None,
+            &token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_delete_message_already_deleted() {
+        let (mut app, _, _, token, _ws_pool) = setup().await;
+        let channel_id = create_channel(&mut app, &token).await;
+        let msg = send_message(&mut app, &channel_id, &token).await;
+        let msg_id = msg["id"].as_i64().unwrap();
+
+        let resp1 = request(
+            &mut app,
+            Method::DELETE,
+            &format!("/messages/{}", msg_id),
+            None,
+            &token,
+        )
+        .await;
+        assert_eq!(resp1.status(), StatusCode::NO_CONTENT);
+
+        let resp2 = request(
+            &mut app,
+            Method::DELETE,
+            &format!("/messages/{}", msg_id),
+            None,
+            &token,
+        )
+        .await;
+        assert_eq!(resp2.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_delete_message_requires_auth() {
+        let (mut app, _, _, token, _) = setup().await;
+        let channel_id = create_channel(&mut app, &token).await;
+        let msg = send_message(&mut app, &channel_id, &token).await;
+        let msg_id = msg["id"].as_i64().unwrap();
+
+        let resp = request(
+            &mut app,
+            Method::DELETE,
+            &format!("/messages/{}", msg_id),
+            None,
+            "",
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_delete_message_ws_event() {
+        let (mut app, _, _, token, ws_pool) = setup().await;
+        let channel_id = create_channel(&mut app, &token).await;
+
+        let mut rx = ws_pool.register("testuser", "test-conn", &[channel_id.clone()]);
+        while rx.try_recv().is_ok() {}
+
+        let msg = send_message(&mut app, &channel_id, &token).await;
+        let msg_id = msg["id"].as_i64().unwrap();
+
+        while rx.try_recv().is_ok() {}
+
+        let resp = request(
+            &mut app,
+            Method::DELETE,
+            &format!("/messages/{}", msg_id),
+            None,
+            &token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        let event = rx
+            .try_recv()
+            .expect("expected MsgDeleted WS event");
+        match event {
+            ServerEvent::MsgDeleted {
+                channel_id: ch,
+                cursor,
+            } => {
+                assert_eq!(ch, channel_id);
+                assert_eq!(cursor, msg_id);
+            }
+            other => panic!("expected MsgDeleted, got {other:?}"),
+        }
+    }
+
+    // ── Thread replies ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_send_thread_reply_ws_event() {
+        let (mut app, _, _, token, ws_pool) = setup().await;
+        let channel_id = create_channel(&mut app, &token).await;
+
+        let parent = send_message(&mut app, &channel_id, &token).await;
+        let parent_id = parent["id"].as_i64().unwrap();
+
+        let mut rx = ws_pool.register("testuser", "test-conn", &[channel_id.clone()]);
+        while rx.try_recv().is_ok() {}
+
+        let resp = request(
+            &mut app,
+            Method::POST,
+            &format!("/channels/{}/messages", channel_id),
+            Some(json!({
+                "msg_type": "text",
+                "payload": {"text": "thread reply"},
+                "thread_parent_id": parent_id,
+            })),
+            &token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let reply_body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let reply_id = reply_body["id"].as_i64().unwrap();
+
+        let event = rx
+            .try_recv()
+            .expect("expected ThreadReply WS event");
+        match event {
+            ServerEvent::ThreadReply {
+                channel_id: ch,
+                thread_parent_cursor,
+                cursor,
+                preview,
+                ..
+            } => {
+                assert_eq!(ch, channel_id);
+                assert_eq!(thread_parent_cursor, parent_id);
+                assert_eq!(cursor, reply_id);
+                assert_eq!(preview, "thread reply");
+            }
+            other => panic!("expected ThreadReply, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_thread() {
+        let (mut app, _, _, token, _ws_pool) = setup().await;
+        let channel_id = create_channel(&mut app, &token).await;
+
+        let parent = send_message(&mut app, &channel_id, &token).await;
+        let parent_id = parent["id"].as_i64().unwrap();
+
+        for text in &["first reply", "second reply"] {
+            let resp = request(
+                &mut app,
+                Method::POST,
+                &format!("/channels/{}/messages", channel_id),
+                Some(json!({
+                    "msg_type": "text",
+                    "payload": {"text": text},
+                    "thread_parent_id": parent_id,
+                })),
+                &token,
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::CREATED);
+        }
+
+        let resp = request(
+            &mut app,
+            Method::GET,
+            &format!("/channels/{}/messages/{}/thread", channel_id, parent_id),
+            None,
+            &token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["payload"]["text"], "first reply");
+        assert_eq!(messages[1]["payload"]["text"], "second reply");
+        for msg in messages {
+            assert_eq!(msg["thread_parent_id"], parent_id);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_thread_replies_excluded_from_channel_listing() {
+        let (mut app, _, _, token, _ws_pool) = setup().await;
+        let channel_id = create_channel(&mut app, &token).await;
+
+        let parent = send_message(&mut app, &channel_id, &token).await;
+        let parent_id = parent["id"].as_i64().unwrap();
+
+        let _ = request(
+            &mut app,
+            Method::POST,
+            &format!("/channels/{}/messages", channel_id),
+            Some(json!({
+                "msg_type": "text",
+                "payload": {"text": "thread reply"},
+                "thread_parent_id": parent_id,
+            })),
+            &token,
+        )
+        .await;
+
+        let resp = request(
+            &mut app,
+            Method::POST,
+            &format!("/channels/{}/messages", channel_id),
+            Some(json!({"msg_type": "text", "payload": {"text": "another msg"}})),
+            &token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let list_resp = request(
+            &mut app,
+            Method::GET,
+            &format!("/channels/{}/messages", channel_id),
+            None,
+            &token,
+        )
+        .await;
+        assert_eq!(list_resp.status(), StatusCode::OK);
+        let list_body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(list_resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let messages = list_body["messages"].as_array().unwrap();
+        for msg in messages {
+            assert!(
+                msg["thread_parent_id"].is_null(),
+                "expected thread_parent_id to be null, got {:?}",
+                msg["thread_parent_id"]
+            );
+        }
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_thread_not_found() {
+        let (mut app, _, _, token, _) = setup().await;
+        let channel_id = create_channel(&mut app, &token).await;
+
+        let resp = request(
+            &mut app,
+            Method::GET,
+            &format!("/channels/{}/messages/99999/thread", channel_id),
+            None,
+            &token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+}

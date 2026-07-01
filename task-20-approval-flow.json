@@ -1,0 +1,38 @@
+{
+  "task": "T20: Join requests + invitation approval API",
+  "status": "completed",
+  "files_created": [
+    "src/api/requests.rs",
+    "src/api/invitations.rs"
+  ],
+  "files_modified": [
+    "src/api/mod.rs",
+    "src/main.rs"
+  ],
+  "endpoints": {
+    "join_requests": {
+      "POST /api/channels/{id}/join-request": "Create join request (auth, validates not member, no duplicate pending, WS notify)",
+      "GET /api/requests": "List pending requests for channels where user is owner/admin",
+      "PUT /api/requests/{id}/approve": "Approve (owner/admin only, adds member on approve)",
+      "PUT /api/requests/{id}/reject": "Reject (owner/admin only)"
+    },
+    "invitations": {
+      "POST /api/channels/{id}/invitations": "Create invitation (owner only, validates user exists, not member, no duplicate)",
+      "GET /api/invitations": "List pending invitations for current user",
+      "PUT /api/invitations/{id}/accept": "Accept (target user only, adds member)",
+      "PUT /api/invitations/{id}/reject": "Reject (target user only)"
+    }
+  },
+  "guards": {
+    "already_member": "Conflict on create_join_request / create_invitation if already member",
+    "duplicate_pending": "Conflict if pending request/invitation already exists",
+    "non_owner_approve": "Forbidden if not owner/admin for requests, not owner for invitations",
+    "wrong_user_accept": "Forbidden if not the invitation target for accept/reject",
+    "already_processed": "Conflict if re-approving/rejecting an already processed request",
+    "nonexistent_user": "NotFound when inviting a non-existent user",
+    "nonexistent_channel": "NotFound when channel doesn't exist",
+    "requires_auth": "Unauthorized without valid token"
+  },
+  "test_results": "140 passed (31 new for requests + invitations, existing tests unaffected)",
+  "cargo_test": "PASS"
+}

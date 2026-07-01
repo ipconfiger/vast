@@ -1,0 +1,29 @@
+- generic [ref=f2e5]:
+  - generic [ref=f2e6]:
+    - img [ref=f2e8]
+    - heading "Create account" [level=1] [ref=f2e11]
+    - paragraph [ref=f2e12]: Join the conversation
+  - generic [ref=f2e13]:
+    - generic [ref=f2e14]:
+      - generic [ref=f2e15]: Username
+      - generic [ref=f2e16]:
+        - img [ref=f2e17]
+        - textbox "Username" [ref=f2e20]:
+          - /placeholder: Choose a username
+    - generic [ref=f2e21]:
+      - generic [ref=f2e22]: Password
+      - generic [ref=f2e23]:
+        - img [ref=f2e24]
+        - textbox "Password" [ref=f2e27]:
+          - /placeholder: Create a password
+    - generic [ref=f2e28]:
+      - generic [ref=f2e29]: Invite Code
+      - generic [ref=f2e30]:
+        - img [ref=f2e31]
+        - textbox "Invite Code" [ref=f2e34]:
+          - /placeholder: Enter your invite code
+    - button "Create account" [ref=f2e35]
+  - paragraph [ref=f2e36]:
+    - text: Already have an account?
+    - link "Sign in" [ref=f2e37] [cursor=pointer]:
+      - /url: /login

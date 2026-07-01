@@ -1,0 +1,1 @@
+{"scenario":2,"name":"Register","endpoint":"POST /api/auth/register","expected_code":201,"actual_code":201,"response":{"has_access_token":true,"has_refresh_token":true,"expires_in":900},"result":"PASS"}

@@ -1,0 +1,70 @@
+warning: struct `Claims` is never constructed
+  --> src/auth/mod.rs:13:12
+   |
+13 | pub struct Claims {
+   |            ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `TokenPair` is never constructed
+  --> src/auth/mod.rs:22:12
+   |
+22 | pub struct TokenPair {
+   |            ^^^^^^^^^
+
+warning: constant `ACCESS_TTL_SECS` is never used
+  --> src/auth/mod.rs:28:7
+   |
+28 | const ACCESS_TTL_SECS: u32 = 900;  // 15 minutes
+   |       ^^^^^^^^^^^^^^^
+
+warning: constant `REFRESH_TTL_SECS` is never used
+  --> src/auth/mod.rs:29:7
+   |
+29 | const REFRESH_TTL_SECS: u32 = 604800; // 7 days
+   |       ^^^^^^^^^^^^^^^^
+
+warning: function `create_token_pair` is never used
+  --> src/auth/mod.rs:32:8
+   |
+32 | pub fn create_token_pair(user_id: &str, secret: &str) -> Result<TokenPair, jsonwebtoken::errors::Error> {
+   |        ^^^^^^^^^^^^^^^^^
+
+warning: function `validate_token` is never used
+  --> src/auth/mod.rs:71:8
+   |
+71 | pub fn validate_token(token: &str, secret: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
+   |        ^^^^^^^^^^^^^^
+
+warning: function `refresh_access_token` is never used
+  --> src/auth/mod.rs:81:8
+   |
+81 | pub fn refresh_access_token(refresh_token: &str, secret: &str) -> Result<TokenPair, jsonwebtoken::errors::Error> {
+   |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `hash_password` is never used
+  --> src/auth/mod.rs:92:8
+   |
+92 | pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
+   |        ^^^^^^^^^^^^^
+
+warning: function `verify_password` is never used
+   --> src/auth/mod.rs:100:8
+    |
+100 | pub fn verify_password(password: &str, hash: &str) -> Result<bool, argon2::password_hash::Error> {
+    |        ^^^^^^^^^^^^^^^
+
+warning: struct `AuthenticatedUser` is never constructed
+ --> src/auth/middleware.rs:9:12
+  |
+9 | pub struct AuthenticatedUser(pub String);
+  |            ^^^^^^^^^^^^^^^^^
+
+warning: `im-server` (bin "im-server") generated 10 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running `target/debug/im-server`
+[2m2026-07-01T05:17:15.481636Z[0m [32m INFO[0m ThreadId(01) [2mim_server[0m[2m:[0m [2m22:[0m Starting IM Server...
+
+thread 'main' (2162843) panicked at src/main.rs:30:72:
+called `Result::unwrap()` on an `Err` value: Os { code: 98, kind: AddrInUse, message: "Address already in use" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

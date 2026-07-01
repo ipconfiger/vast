@@ -1,0 +1,18 @@
+Task 10: Embed module + .gitignore
+====================================
+
+Verification: PASSED
+
+- `cargo build` exit code: 0
+- Frontend dist/ exists: NO (graceful handling confirmed)
+- Asset structure: RustEmbed with #[folder = "frontend/dist/"], #[exclude = "*.map"]
+- Handler: serve_frontend() with SPA history API fallback
+- Fallback: index.html served for unknown routes (client-side routing)
+- No routes registered (T11 handles route integration)
+- .gitignore: data/, frontend/dist/, *.db, *.db-wal, *.db-shm appended
+
+Files changed:
+  src/embed.rs   — written (replaced placeholder)
+  .gitignore     — appended entries
+
+Next: T11 — graceful shutdown route integration in main.rs

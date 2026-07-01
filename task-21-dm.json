@@ -1,0 +1,17 @@
+{
+  "task": "T21: DM (1:1 + group) support",
+  "status": "completed",
+  "test_results": {
+    "dm_tests": 8,
+    "channel_tests": 28,
+    "total": 109,
+    "all_passed": true
+  },
+  "files_changed": [
+    "src/api/dm.rs",
+    "src/api/mod.rs",
+    "src/main.rs",
+    "src/api/channels.rs"
+  ],
+  "summary": "Created DM module with POST/GET /api/dm, registered routes, filtered DMs from channel listing, blocked DM archive/unarchive/update."
+}

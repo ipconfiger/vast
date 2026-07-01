@@ -1,0 +1,5 @@
+journal_mode: wal
+foreign_keys (with sqlite3 CLI default=0): 0
+foreign_keys (explicitly ON): 1
+cache_size: -2000
+temp_store: 0
