@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { registerUser, loginUser, logoutUser } from './helpers';
 
 test.describe('Authentication', () => {
   test('login page renders and redirects to /channels on success', async ({ page }) => {
@@ -90,5 +91,29 @@ test.describe('Authentication', () => {
     // Should be redirected to login
     await page.waitForURL('/login', { timeout: 10000 });
     await expect(page.locator('h1')).toContainText('Welcome back');
+  });
+
+  test('logout and re-login works', async ({ page }) => {
+    const { username, password } = await registerUser(page, 'logouttest');
+    await logoutUser(page);
+    await expect(page).toHaveURL('/login');
+    await loginUser(page, username, password);
+    await expect(page).toHaveURL(/\/channels/);
+  });
+
+  test('auth persists across page reload', async ({ page }) => {
+    await registerUser(page, 'reloadtest');
+    await expect(page).toHaveURL(/\/channels/);
+    await page.reload();
+    await page.waitForTimeout(1000);
+    await expect(page).toHaveURL(/\/channels/);
+    expect(page.url()).not.toContain('/login');
+  });
+
+  test('redirects to /channels when already logged in and visiting /login', async ({ page }) => {
+    await registerUser(page, 'alreadyauth');
+    await page.goto('/login');
+    await page.waitForURL(/\/channels/, { timeout: 10000 });
+    await expect(page).toHaveURL(/\/channels/);
   });
 });

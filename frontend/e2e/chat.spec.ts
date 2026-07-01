@@ -1,45 +1,51 @@
 import { test, expect } from '@playwright/test';
+import { registerUser, createChannel, sendMessage, getChannelIdFromUrl } from './helpers';
 
 test.describe('Chat', () => {
-  test.beforeEach(async ({ page }) => {
-    // Register and login to get to the channels page
-    const username = `e2echat${Date.now()}`;
-    await page.goto('/register');
-    await page.fill('#reg-username', username);
-    await page.fill('#reg-password', 'ChatPass12345');
-    await page.fill('#reg-invite-code', 'IM2024');
-    await page.click('button[type="submit"]');
-
-    // Wait for redirect to channels
-    await page.waitForURL(/\/channels/, { timeout: 15000 });
+  test('send text message and see it appear', async ({ page }) => {
+    await registerUser(page, 'chatmsg');
+    await createChannel(page, 'ChatTest');
+    await page.waitForSelector('.channel-item');
+    await page.locator('.channel-item').first().click();
+    await page.waitForTimeout(500);
+    await sendMessage(page, 'Hello from e2e!');
+    await expect(page.locator('.message-bubble')).toContainText('Hello from e2e!', { timeout: 5000 });
   });
 
-  test('channels page renders after login', async ({ page }) => {
-    // Should be on the channels page
-    await expect(page).toHaveURL(/\/channels/);
-
-    // The sidebar or channel list should be visible
-    await expect(page.locator('.channel-page, .flex.h-screen')).toBeVisible();
+  test('send multiple messages in order', async ({ page }) => {
+    await registerUser(page, 'chatmult');
+    await createChannel(page, 'MultiChat');
+    await page.waitForSelector('.channel-item');
+    await page.locator('.channel-item').first().click();
+    await page.waitForTimeout(500);
+    await sendMessage(page, 'First');
+    await sendMessage(page, 'Second');
+    await sendMessage(page, 'Third');
+    const bubbles = page.locator('.message-bubble');
+    await expect(bubbles).toHaveCount(3, { timeout: 5000 });
+    await expect(bubbles.nth(0)).toContainText('First');
+    await expect(bubbles.nth(2)).toContainText('Third');
   });
 
-  test('can navigate to a channel', async ({ page }) => {
-    // The channels page should show a channel list or prompt
-    await page.waitForSelector('.channel-page, .flex.h-screen', { timeout: 5000 });
-
-    // If there's a "select channel" prompt or channel list, verify it renders
-    const pageContent = page.locator('body');
-    await expect(pageContent).toBeVisible();
+  test('empty message state', async ({ page }) => {
+    await registerUser(page, 'chatempty');
+    await createChannel(page, 'EmptyChat');
+    await page.waitForSelector('.channel-item');
+    await page.locator('.channel-item').first().click();
+    await page.waitForTimeout(500);
+    await expect(page.locator('text=No messages yet')).toBeVisible({ timeout: 5000 });
   });
 
-  test('channel message input is visible', async ({ page }) => {
-    // Navigate to a specific channel
-    await page.goto('/channels/test-channel');
-
-    // Wait for the page to render
-    await page.waitForTimeout(2000);
-
-    // The page should load (even if channel doesn't exist yet, it should show UI)
-    const pageContent = page.locator('body');
-    await expect(pageContent).toBeVisible();
+  test('message input clears after send', async ({ page }) => {
+    await registerUser(page, 'chatclear');
+    await createChannel(page, 'ClearTest');
+    await page.waitForSelector('.channel-item');
+    await page.locator('.channel-item').first().click();
+    await page.waitForTimeout(500);
+    const input = page.locator('.message-input textarea, textarea[placeholder*="#"]').first();
+    await input.fill('Ephemeral message');
+    await input.press('Enter');
+    await page.waitForTimeout(300);
+    await expect(input).toHaveValue('', { timeout: 3000 });
   });
 });
