@@ -3,7 +3,7 @@ import { useMutation } from '@tanstack/react-query'
 import { apiClient } from '../api/client'
 import { useAuthStore } from '../stores/authStore'
 import { useNavigate } from 'react-router'
-import { ArrowLeft, Save } from 'lucide-react'
+import { ArrowLeft, Save, CheckCircle } from 'lucide-react'
 
 export default function ProfilePage() {
   const user = useAuthStore((s) => s.user)
@@ -11,6 +11,7 @@ export default function ProfilePage() {
   const navigate = useNavigate()
   const [displayName, setDisplayName] = useState('')
   const [fetched, setFetched] = useState(false)
+  const [saved, setSaved] = useState(false)
 
   const saveMutation = useMutation({
     mutationFn: (display_name: string) =>
@@ -20,6 +21,8 @@ export default function ProfilePage() {
       }),
     onSuccess: (data) => {
       if (user) setUser({ ...user, display_name: data.display_name })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 3000)
     },
   })
 
@@ -61,6 +64,12 @@ export default function ProfilePage() {
               <Save className="h-4 w-4" />
               {saveMutation.isPending ? 'Saving...' : 'Save'}
             </button>
+            {saved && (
+              <div className="flex items-center gap-2 text-sm text-emerald-400 bg-emerald-500/10 rounded-lg px-3 py-2">
+                <CheckCircle className="h-4 w-4" />
+                Display name saved successfully!
+              </div>
+            )}
           </div>
         </div>
       </div>
