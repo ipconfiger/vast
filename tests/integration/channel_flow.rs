@@ -9,7 +9,6 @@ use im_server::{AppConfig, AppState, TlsMode};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt;
-use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -188,7 +187,7 @@ async fn channel_lifecycle_integration_flow() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "Send message failed: {body}");
-    let first_msg_id = body["id"].as_i64().unwrap();
+    let _first_msg_id = body["id"].as_i64().unwrap();
     assert_eq!(body["msg_type"], "text");
     assert_eq!(body["payload"]["text"], "Hello from integration test!");
 
@@ -283,7 +282,7 @@ async fn channel_lifecycle_integration_flow() {
     assert_eq!(status, StatusCode::OK);
 
     // Verify unarchived
-    let (status, body) = request(
+    let (_status, body) = request(
         &mut app,
         Method::GET,
         &format!("/channels/{channel_id}"),
@@ -346,7 +345,7 @@ async fn non_owner_cannot_archive() {
     let channel_id = body["id"].as_str().unwrap().to_string();
 
     // Add member
-    let (status, body) = request(
+    let (_status, body) = request(
         &mut app,
         Method::POST,
         &format!("/channels/{channel_id}/join-request"),

@@ -446,7 +446,7 @@ mod tests {
         .unwrap();
         assert_eq!(body["name"], "Test Channel");
         assert_eq!(body["description"], "A test channel");
-        assert!(body["id"].as_str().unwrap().len() > 0);
+        assert!(!body["id"].as_str().unwrap().is_empty());
         assert_eq!(body["is_direct"], false);
         assert_eq!(body["is_archived"], false);
     }

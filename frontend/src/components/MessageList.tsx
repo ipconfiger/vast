@@ -17,9 +17,16 @@ export function MessageList({ channelId }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const prevMessageCountRef = useRef(0)
 
-  const { isLoading } = useMessages(channelId)
-  const messages = useMessageStore((s) => s.messagesByChannel.get(channelId) ?? [])
+  const { data: messageData, isLoading } = useMessages(channelId)
+  // Keep `?? []` OUTSIDE the selector: returning a fresh `[]` from inside
+  // trips React's useSyncExternalStore "getSnapshot should be cached" loop.
+  const messages = useMessageStore((s) => s.messagesByChannel.get(channelId)) ?? []
+  const setMessages = useMessageStore((s) => s.setMessages)
   const user = useAuthStore((s) => s.user)
+
+  useEffect(() => {
+    if (messageData) setMessages(channelId, messageData)
+  }, [messageData, channelId, setMessages])
 
   const virtualizer = useVirtualizer({
     count: messages.length,

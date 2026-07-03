@@ -5,19 +5,21 @@ use axum::{
 };
 use serde_json::json;
 use sqlx::SqlitePool;
+use std::sync::Arc;
 
 use crate::error::AppError;
+use crate::AppState;
 
 /// Extract the authenticated user_id from request
 pub struct AuthenticatedUser(pub String);
 
-impl<S> FromRequestParts<S> for AuthenticatedUser
-where
-    S: Send + Sync,
-{
+impl FromRequestParts<Arc<AppState>> for AuthenticatedUser {
     type Rejection = Response;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
         let auth_header = parts
             .headers
             .get("authorization")
@@ -26,9 +28,8 @@ where
 
         match auth_header {
             Some(token) => {
-                let secret = std::env::var("JWT_SECRET")
-                    .unwrap_or_else(|_| "dev-secret-change-me".to_string());
-                match super::validate_token(token, &secret) {
+                let secret = &state.config.jwt_secret;
+                match super::validate_token(token, secret) {
                     Ok(claims) => Ok(AuthenticatedUser(claims.sub)),
                     Err(_) => Err((
                         StatusCode::UNAUTHORIZED,

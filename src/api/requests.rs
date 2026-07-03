@@ -412,7 +412,7 @@ mod tests {
         .unwrap();
         assert_eq!(body["status"], "pending");
         assert_eq!(body["username"], "requester");
-        assert!(body["id"].as_str().unwrap().len() > 0);
+        assert!(!body["id"].as_str().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -450,7 +450,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_join_request_already_member() {
-        let (mut app, pool, owner_id, owner_token, channel_id) = setup().await;
+        let (mut app, _pool, owner_id, owner_token, channel_id) = setup().await;
 
         // Owner is already a member, try to request join
         let resp = request(

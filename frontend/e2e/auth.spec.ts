@@ -3,6 +3,12 @@ import { registerUser, loginUser, logoutUser } from './helpers';
 
 test.describe('Authentication', () => {
   test('login page renders and redirects to /channels on success', async ({ page }) => {
+    // Seed the test user (idempotent — 409 is fine if it already exists)
+    await page.request.post('/api/auth/register', {
+      data: { username: 'e2elogintest', password: 'E2eLogin123', invite_code: 'IM2024' },
+      failOnStatusCode: false,
+    });
+
     // Navigate to login page
     await page.goto('/login');
     await expect(page.locator('h1')).toContainText('Welcome back');
@@ -28,7 +34,7 @@ test.describe('Authentication', () => {
     await page.click('button[type="submit"]');
 
     // Should show an error message
-    await expect(page.locator('.bg-red-500\\/10, [class*="red"]')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText(/invalid username or password/i)).toBeVisible({ timeout: 10000 });
   });
 
   test('login page has link to register', async ({ page }) => {

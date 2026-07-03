@@ -52,7 +52,12 @@ async fn main() {
     match tls_mode {
         TlsMode::None => {
             let listener =
-                tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+                tokio::net::TcpListener::bind("0.0.0.0:3000")
+                .await
+                .unwrap_or_else(|e| {
+                    eprintln!("Failed to bind to 0.0.0.0:3000: {e}");
+                    std::process::exit(1);
+                });
             tracing::info!("IM Server listening on http://0.0.0.0:3000");
 
             let shutdown_signal = async {
@@ -63,7 +68,10 @@ async fn main() {
             axum::serve(listener, app)
                 .with_graceful_shutdown(shutdown_signal)
                 .await
-                .unwrap();
+                .unwrap_or_else(|e| {
+                    eprintln!("Server error: {e}");
+                    std::process::exit(1);
+                });
         }
         TlsMode::SelfSigned => {
             serve_tls(app, "certs/cert.pem", "certs/key.pem").await;

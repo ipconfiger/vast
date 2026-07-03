@@ -79,12 +79,24 @@ pub async fn register(
         ));
     }
 
-    // Check invite code
+    // Hash password (CPU-bound; do before opening the transaction so the
+    // SQLite write lock isn't held during argon2 work).
+    let password_hash = auth::hash_password(&body.password)
+        .map_err(|e| AppError::Internal(format!("Failed to hash password: {e}")))?;
+    let user_id = Uuid::new_v4().to_string();
+
+    // Atomicity: invite check + user insert + use_count increment must commit
+    // together — a partial commit (e.g. user created but use_count not bumped)
+    // leaves the DB inconsistent. On any early `return Err` below, dropping
+    // `tx` without commit triggers an automatic sqlx rollback.
+    let mut tx = state.pool.begin().await.map_err(AppError::from)?;
+
+    // 1. Check invite code validity within the transaction
     let invite = sqlx::query_as::<_, (String, i64, i64, bool)>(
         "SELECT code, max_uses, use_count, is_active FROM invite_codes WHERE code = ?",
     )
     .bind(&body.invite_code)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(AppError::from)?;
 
@@ -108,12 +120,12 @@ pub async fn register(
         }
     }
 
-    // Check for duplicate username
+    // 2. Check for duplicate username
     let existing = sqlx::query_as::<_, (String,)>(
         "SELECT id FROM users WHERE username = ?",
     )
     .bind(&username)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(AppError::from)?;
 
@@ -123,30 +135,27 @@ pub async fn register(
         ));
     }
 
-    // Hash password
-    let password_hash = auth::hash_password(&body.password)
-        .map_err(|e| AppError::Internal(format!("Failed to hash password: {e}")))?;
-
-    // Create user
-    let user_id = Uuid::new_v4().to_string();
+    // 3. Insert user
     sqlx::query(
         "INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)",
     )
     .bind(&user_id)
     .bind(&username)
     .bind(&password_hash)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await
     .map_err(AppError::from)?;
 
-    // Increment invite use_count
+    // 4. Increment invite use_count
     sqlx::query(
         "UPDATE invite_codes SET use_count = use_count + 1 WHERE code = ?",
     )
     .bind(&body.invite_code)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await
     .map_err(AppError::from)?;
+
+    tx.commit().await.map_err(AppError::from)?;
 
     // Create token pair
     let tokens = auth::create_token_pair(&user_id, &state.config.jwt_secret)
@@ -186,7 +195,7 @@ pub async fn login(
     let session_id = Uuid::new_v4().to_string();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or(std::time::Duration::from_secs(0))
         .as_secs() as i64;
     let expires_at = now + 604800; // 7 days
 
@@ -419,7 +428,7 @@ mod tests {
         assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
 
         // Password without letters
-        let (status, body) = post_json(
+        let (status, _body) = post_json(
             &mut app,
             "/auth/register",
             json!({
@@ -432,7 +441,7 @@ mod tests {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
         // Password without digits
-        let (status, body) = post_json(
+        let (status, _body) = post_json(
             &mut app,
             "/auth/register",
             json!({
@@ -684,7 +693,7 @@ mod tests {
     async fn test_logout_requires_auth() {
         ensure_env();
         let pool = setup_pool().await;
-        let mut app = build_app(make_state(pool));
+        let app = build_app(make_state(pool));
 
         let req = Request::builder()
             .method("POST")

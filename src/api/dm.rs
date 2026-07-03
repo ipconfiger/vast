@@ -325,7 +325,7 @@ mod tests {
         assert_eq!(body["is_direct"], true);
         assert_eq!(body["is_group_dm"], false);
         assert_eq!(body["is_archived"], false);
-        assert!(body["id"].as_str().unwrap().len() > 0);
+        assert!(!body["id"].as_str().unwrap().is_empty());
         assert!(body["owner_id"].is_null());
     }
 

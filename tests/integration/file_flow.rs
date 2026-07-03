@@ -1,11 +1,13 @@
 //! Integration test: File upload/download lifecycle
 //!   upload PNG → download with correct MIME → disallowed type rejected → 404
+//!   unauthenticated upload/download rejected with 401
 use axum::{
     body::Body,
     http::{header, Method, Request, StatusCode},
     Router,
 };
 use im_server::{AppConfig, AppState, TlsMode};
+use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -100,6 +102,30 @@ fn tmp_upload_dir() -> std::path::PathBuf {
     dir
 }
 
+async fn register_token(app: &mut Router, username: &str) -> String {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/auth/register")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "username": username,
+                "password": "FileTest12345",
+                "invite_code": "E2ETEST"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let val: Value = serde_json::from_slice(&body_bytes).unwrap_or_default();
+    assert_eq!(status, StatusCode::CREATED, "register failed: {val}");
+    val["access_token"].as_str().unwrap().to_string()
+}
+
 // ---------------------------------------------------------------------------
 // File Flow
 // ---------------------------------------------------------------------------
@@ -109,7 +135,8 @@ async fn file_upload_download_integrity() {
     ensure_env();
     let pool = setup_pool().await;
     let tmp_dir = tmp_upload_dir();
-    let app = build_app_with_tmpdir(pool, tmp_dir.clone());
+    let mut app = build_app_with_tmpdir(pool, tmp_dir.clone());
+    let token = register_token(&mut app, "fileuser1").await;
 
     let png_data = png_bytes();
     let (body, ct) = multipart_body("file", "test.png", "image/png", &png_data);
@@ -119,6 +146,7 @@ async fn file_upload_download_integrity() {
         .method(Method::POST)
         .uri("/files/upload")
         .header(header::CONTENT_TYPE, &ct)
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(body)
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
@@ -137,7 +165,8 @@ async fn file_upload_download_integrity() {
     // Download
     let req = Request::builder()
         .method(Method::GET)
-        .uri(&format!("/files/{file_id}"))
+        .uri(format!("/files/{file_id}"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
@@ -156,9 +185,11 @@ async fn file_upload_download_integrity() {
 
 #[tokio::test]
 async fn file_disallowed_mime_rejected() {
+    ensure_env();
     let pool = setup_pool().await;
     let tmp_dir = tmp_upload_dir();
-    let app = build_app_with_tmpdir(pool, tmp_dir);
+    let mut app = build_app_with_tmpdir(pool, tmp_dir);
+    let token = register_token(&mut app, "fileuser2").await;
 
     let (body, ct) =
         multipart_body("file", "evil.exe", "application/x-msdownload", &[0u8; 100]);
@@ -167,6 +198,7 @@ async fn file_disallowed_mime_rejected() {
         .method(Method::POST)
         .uri("/files/upload")
         .header(header::CONTENT_TYPE, &ct)
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(body)
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
@@ -179,6 +211,48 @@ async fn file_disallowed_mime_rejected() {
 
 #[tokio::test]
 async fn file_not_found_returns_404() {
+    ensure_env();
+    let pool = setup_pool().await;
+    let tmp_dir = tmp_upload_dir();
+    let mut app = build_app_with_tmpdir(pool, tmp_dir);
+    let token = register_token(&mut app, "fileuser3").await;
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/files/00000000-0000-0000-0000-000000000000")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn file_upload_without_auth_returns_401() {
+    ensure_env();
+    let pool = setup_pool().await;
+    let tmp_dir = tmp_upload_dir();
+    let app = build_app_with_tmpdir(pool, tmp_dir);
+
+    let (body, ct) = multipart_body("file", "test.png", "image/png", &png_bytes());
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/files/upload")
+        .header(header::CONTENT_TYPE, &ct)
+        .body(body)
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "Unauthenticated upload must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn file_download_without_auth_returns_401() {
+    ensure_env();
     let pool = setup_pool().await;
     let tmp_dir = tmp_upload_dir();
     let app = build_app_with_tmpdir(pool, tmp_dir);
@@ -189,5 +263,9 @@ async fn file_not_found_returns_404() {
         .body(Body::empty())
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "Unauthenticated download must be rejected"
+    );
 }

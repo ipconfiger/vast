@@ -1,6 +1,12 @@
 /target
 data/
 frontend/dist/
+frontend/node_modules/
+frontend/test-results/
 *.db
 *.db-wal
 *.db-shm
+.env
+.omo/
+.sisyphus/
+.omc/

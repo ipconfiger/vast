@@ -7,6 +7,7 @@ pub mod ws;
 
 use axum::{
     extract::State,
+    http::{HeaderValue, Method, header},
     routing::{delete, get, post, put},
     Json, Router,
 };
@@ -44,10 +45,9 @@ pub enum TlsMode {
 impl AppConfig {
     pub fn from_env() -> Self {
         let exe_dir = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .to_path_buf();
+            .ok()
+            .and_then(|path| path.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
         let data_dir = exe_dir.join("data");
 
         let tls_mode = match std::env::var("TLS_MODE")
@@ -163,11 +163,33 @@ pub fn api_routes() -> Router<Arc<AppState>> {
 
 /// Build the full application router (API + WS + frontend fallback)
 pub fn build_app(state: Arc<AppState>) -> Router {
+    let allowed_origins = [
+        "http://localhost:5173".parse::<HeaderValue>().unwrap(),
+    ];
+
+    let cors = CorsLayer::new()
+        .allow_origin(allowed_origins)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            header::ACCEPT,
+        ])
+        .allow_credentials(true)
+        .max_age(Duration::from_secs(3600));
+
     Router::new()
         .nest("/api", api_routes())
         .route("/ws", get(ws::ws_handler))
         .fallback(embed::serve_frontend)
-        .layer(CorsLayer::permissive())
+        .layer(cors)
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(30),

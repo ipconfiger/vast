@@ -13,14 +13,5 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    rolldownOptions: {
-      output: {
-        codeSplitting: {
-          groups: [
-            { name: 'monaco-editor', test: /[\\/]node_modules[\\/](?:@[\\/])?monaco-editor[\\/]/ },
-          ],
-        },
-      },
-    },
   },
 })

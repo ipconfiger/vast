@@ -2,7 +2,7 @@
 //!   register → login → refresh → logout → expired token rejected
 use axum::{
     body::Body,
-    http::{header, Method, Request, StatusCode},
+    http::{header, Request, StatusCode},
     Router,
 };
 use im_server::{AppConfig, AppState, TlsMode};

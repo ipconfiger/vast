@@ -22,9 +22,41 @@ test.describe('Direct Messages', () => {
 
   test('DM sidebar shows DM channels', async ({ page }) => {
     await registerUser(page, 'dmside');
-    await createChannel(page, 'Regular');
-    await page.waitForTimeout(500);
+
+    const { token: tokenA, userId: userIdA } = await page.evaluate(() => {
+      const raw = localStorage.getItem('auth-storage');
+      const parsed = raw ? JSON.parse(raw) : null;
+      const token = parsed?.state?.token ?? '';
+      const payload = token ? JSON.parse(atob(token.split('.')[1])) : {};
+      return { token, userId: payload.sub ?? '' };
+    });
+
+    const ctx2 = await page.context().browser()!.newContext();
+    const page2 = await ctx2.newPage();
+    await registerUser(page2, 'dmpartner');
+    const userIdB = await page2.evaluate(() => {
+      const raw = localStorage.getItem('auth-storage');
+      const parsed = raw ? JSON.parse(raw) : null;
+      const token = parsed?.state?.token ?? '';
+      const payload = token ? JSON.parse(atob(token.split('.')[1])) : {};
+      return payload.sub ?? '';
+    });
+    await ctx2.close();
+
+    expect(userIdA).toBeTruthy();
+    expect(userIdB).toBeTruthy();
+
+    const dmResponse = await page.request.post('/api/dm', {
+      data: { user_ids: [userIdA, userIdB] },
+      headers: { Authorization: `Bearer ${tokenA}` },
+    });
+    expect(dmResponse.ok()).toBeTruthy();
+
+    await page.goto('/channels');
+    await page.waitForTimeout(1500);
+
     await expect(page.locator('.channel-sidebar')).toBeVisible();
+    await expect(page.locator('.dm-item')).toBeVisible({ timeout: 10000 });
   });
 
   test('navigate between DM and regular channel', async ({ page }) => {

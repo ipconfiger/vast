@@ -1,4 +1,4 @@
-.PHONY: dev build test clean
+.PHONY: dev build test test-e2e test-backend test-frontend clippy clean
 
 # ── Development ──────────────────────────────────────────────────────────
 dev:
@@ -34,8 +34,11 @@ test-backend:
 test-frontend:
 	cd frontend && bun test
 
+test-e2e:
+	cd frontend && bun run test:e2e
+
 clippy:
-	cargo clippy -- -D warnings
+	cargo clippy --all-targets -- -D warnings
 
 # ── Clean ─────────────────────────────────────────────────────────────────
 clean:

@@ -1,7 +1,0 @@
-$ cd /home/alex/Projects/vast/frontend && timeout 15 bun run dev
-
-  VITE v8.1.2  ready in 198 ms
-
-  ➜  Local:   http://localhost:5173/
-  ➜  Network: use --host to expose
-error: script "dev" exited with code 143

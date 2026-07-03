@@ -329,7 +329,8 @@ async fn handle_socket(mut socket: WebSocket, user_id: UserId, pool: Arc<Connect
                         match serde_json::from_str::<ClientEvent>(text.as_str()) {
                             Ok(ClientEvent::Ping) => {
                                 debug!("Ping received, sending Pong");
-                                let pong = serde_json::to_string(&ServerEvent::Pong).unwrap();
+                                let pong = serde_json::to_string(&ServerEvent::Pong)
+                                    .expect("Pong is always serializable");
                                 let _ = socket.send(Message::Text(pong.into())).await;
                             }
                             Ok(ClientEvent::TypingStart { channel_id }) => {
@@ -489,13 +490,11 @@ mod tests {
     fn register_multiple_channels_subscribes_to_last() {
         let pool = make_pool();
         let channels = vec!["ch-a".to_string(), "ch-b".to_string()];
-        let rx = pool.register("user-a", "conn-1", &channels);
+        let _rx = pool.register("user-a", "conn-1", &channels);
 
         // Both broadcasters exist.
         assert!(pool.channel_broadcasters.contains_key("ch-a"));
         assert!(pool.channel_broadcasters.contains_key("ch-b"));
-        // Receiver is valid (non-zero capacity from the last channel).
-        assert!(rx.len() >= 0);
     }
 
     #[test]

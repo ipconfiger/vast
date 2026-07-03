@@ -3,10 +3,12 @@ use axum::{
     http::{header, HeaderMap, StatusCode},
     Json,
 };
+use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::auth::middleware::AuthenticatedUser;
 use crate::db;
 use crate::error::{created_response, AppError};
 use crate::AppState;
@@ -71,6 +73,45 @@ fn is_mime_allowed(mime_type: &str) -> bool {
     })
 }
 
+/// Percent-encoding set for RFC 5987 filename* parameter.
+/// Encodes everything except alphanumerics, hyphens, periods, underscores, and spaces.
+const RFC_5987_ENCODE_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'!')
+    .add(b'#')
+    .add(b'$')
+    .add(b'&')
+    .add(b'+')
+    .add(b',')
+    .add(b'/')
+    .add(b':')
+    .add(b';')
+    .add(b'=')
+    .add(b'?')
+    .add(b'@')
+    .add(b'"')
+    .add(b'(')
+    .add(b')')
+    .add(b'*')
+    .add(b',')
+    .add(b'<')
+    .add(b'>')
+    .add(b'\\');
+
+/// Sanitize filename for Content-Disposition header.
+/// Returns (safe_ascii_name, percent_encoded_name) for use with:
+/// `attachment; filename="<safe_ascii_name>"; filename*=UTF-8''<percent_encoded_name>`
+fn sanitize_filename_for_header(filename: &str) -> (String, String) {
+    let safe_ascii = filename
+        .chars()
+        .filter(|c| !matches!(c, '"' | '\\' | '\r' | '\n'))
+        .collect::<String>();
+
+    let percent_encoded = utf8_percent_encode(filename, RFC_5987_ENCODE_SET).to_string();
+
+    (safe_ascii, percent_encoded)
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -81,9 +122,12 @@ fn is_mime_allowed(mime_type: &str) -> bool {
 /// the file under `data/uploads/{uuid}.{ext}` and writes a JSON sidecar
 /// `data/uploads/{uuid}.meta.json` with the original metadata.
 pub async fn upload_file(
+    auth: AuthenticatedUser,
     State(state): State<Arc<AppState>>,
     mut multipart: Multipart,
 ) -> Result<(StatusCode, Json<UploadResponse>), AppError> {
+    let _user_id = auth.0;
+
     // --- extract the first field -------------------------------------------------
     let field = multipart
         .next_field()
@@ -183,9 +227,12 @@ pub async fn upload_file(
 /// Stream the uploaded file with the correct `Content-Type` and
 /// `Content-Disposition: attachment` headers.
 pub async fn download_file(
+    auth: AuthenticatedUser,
     State(state): State<Arc<AppState>>,
     Path(file_id): Path<String>,
 ) -> Result<(HeaderMap, Vec<u8>), AppError> {
+    let _user_id = auth.0;
+
     let upload_dir = state.config.data_dir.join("uploads");
 
     // --- read metadata sidecar ---------------------------------------------------
@@ -205,9 +252,12 @@ pub async fn download_file(
         .await
         .map_err(|_| AppError::NotFound("File not found".into()))?;
 
-    // Build proper headers.
     let mime_type = metadata.mime_type.parse::<mime::Mime>().unwrap_or(mime::APPLICATION_OCTET_STREAM);
-    let content_disposition = format!("attachment; filename=\"{}\"", metadata.original_name);
+    let (safe_ascii_name, percent_encoded_name) = sanitize_filename_for_header(&metadata.original_name);
+    let content_disposition = format!(
+        "attachment; filename=\"{}\"; filename*=UTF-8''{}",
+        safe_ascii_name, percent_encoded_name
+    );
 
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -237,6 +287,19 @@ mod tests {
     };
     use std::sync::Arc;
     use tower::ServiceExt;
+
+    fn ensure_env() {
+        static ENV: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        ENV.get_or_init(|| unsafe {
+            std::env::set_var("JWT_SECRET", "test");
+        });
+    }
+
+    fn test_token() -> String {
+        crate::auth::create_token_pair("test-user", "test")
+            .unwrap()
+            .access_token
+    }
 
     /// Build a minimal test router backed by a temporary directory.
     async fn test_app() -> Router {
@@ -327,13 +390,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_upload_png_returns_201() {
+        ensure_env();
         let app = test_app().await;
+        let token = test_token();
         let (body, ct) = multipart_body("file", "test.png", "image/png", png_bytes());
 
         let resp = app
             .oneshot(
                 Request::post("/api/files/upload")
                     .header("Content-Type", &ct)
+                    .header("Authorization", format!("Bearer {token}"))
                     .body(body)
                     .unwrap(),
             )
@@ -352,14 +418,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_upload_disallowed_mime_returns_415() {
+    async fn test_upload_without_auth_returns_401() {
+        ensure_env();
         let app = test_app().await;
+        let (body, ct) = multipart_body("file", "test.png", "image/png", png_bytes());
+
+        let resp = app
+            .oneshot(
+                Request::post("/api/files/upload")
+                    .header("Content-Type", &ct)
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_upload_disallowed_mime_returns_415() {
+        ensure_env();
+        let app = test_app().await;
+        let token = test_token();
         let (body, ct) = multipart_body("file", "evil.exe", "application/x-msdownload", vec![0u8; 100]);
 
         let resp = app
             .oneshot(
                 Request::post("/api/files/upload")
                     .header("Content-Type", &ct)
+                    .header("Authorization", format!("Bearer {token}"))
                     .body(body)
                     .unwrap(),
             )
@@ -371,13 +459,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_upload_wrong_field_name_returns_400() {
+        ensure_env();
         let app = test_app().await;
+        let token = test_token();
         let (body, ct) = multipart_body("not_file", "test.png", "image/png", png_bytes());
 
         let resp = app
             .oneshot(
                 Request::post("/api/files/upload")
                     .header("Content-Type", &ct)
+                    .header("Authorization", format!("Bearer {token}"))
                     .body(body)
                     .unwrap(),
             )
@@ -389,7 +480,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_download_returns_correct_mime() {
+        ensure_env();
         let app = test_app().await;
+        let token = test_token();
         let (body, ct) = multipart_body("file", "photo.png", "image/png", png_bytes());
 
         // Upload first
@@ -398,6 +491,7 @@ mod tests {
             .oneshot(
                 Request::post("/api/files/upload")
                     .header("Content-Type", &ct)
+                    .header("Authorization", format!("Bearer {token}"))
                     .body(body)
                     .unwrap(),
             )
@@ -416,6 +510,7 @@ mod tests {
         let download_resp = app
             .oneshot(
                 Request::get(format!("/api/files/{file_id}"))
+                    .header("Authorization", format!("Bearer {token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -439,7 +534,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_download_missing_returns_404() {
+    async fn test_download_without_auth_returns_401() {
+        ensure_env();
         let app = test_app().await;
 
         let resp = app
@@ -451,6 +547,88 @@ mod tests {
             .await
             .unwrap();
 
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_download_missing_returns_404() {
+        ensure_env();
+        let app = test_app().await;
+        let token = test_token();
+
+        let resp = app
+            .oneshot(
+                Request::get("/api/files/00000000-0000-0000-0000-000000000000")
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_download_sanitizes_filename_with_special_characters() {
+        ensure_env();
+        let app = test_app().await;
+        let token = test_token();
+
+        let malicious_filename = "test\"file.png\\test";
+        let (body, ct) = multipart_body("file", malicious_filename, "image/png", png_bytes());
+
+        let upload_resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/files/upload")
+                    .header("Content-Type", &ct)
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(upload_resp.status(), StatusCode::CREATED);
+
+        let body_bytes = axum::body::to_bytes(upload_resp.into_body(), MAX_UPLOAD_SIZE)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        let file_id = json["file_id"].as_str().unwrap().to_string();
+
+        let download_resp = app
+            .oneshot(
+                Request::get(format!("/api/files/{file_id}"))
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(download_resp.status(), StatusCode::OK);
+
+        let content_disposition = download_resp
+            .headers()
+            .get(header::CONTENT_DISPOSITION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+
+        assert!(content_disposition.starts_with("attachment; filename=\""));
+        assert!(content_disposition.contains("; filename*=UTF-8''"));
+
+        let safe_name_part = content_disposition
+            .split("; filename*=")
+            .next()
+            .unwrap()
+            .strip_prefix("attachment; filename=\"")
+            .unwrap()
+            .strip_suffix("\"")
+            .unwrap();
+
+        assert!(!safe_name_part.contains('"'));
+        assert!(!safe_name_part.contains('\\'));
     }
 }

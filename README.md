@@ -19,7 +19,7 @@ A full-featured instant messaging server with a modern React frontend. Built wit
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs) 1.85+ (`rustc`, `cargo`)
+- [Rust](https://rustup.rs) 1.93+ (`rustc`, `cargo`)
 - [Bun](https://bun.sh) 1.2+ (`bun`)
 
 ### Setup
@@ -93,7 +93,7 @@ TLS_MODE=self-signed ./target/release/im-server
 |-------------|-------------------------------------------|
 | **Backend** | Rust, Axum 0.8, Tokio, sqlx, jsonwebtoken |
 | **Database** | SQLite (single file, zero-config)        |
-| **Frontend** | React 19, Vite 8, Tailwind CSS 4         |
+| **Frontend** | React 19, Vite 7, Tailwind CSS 4         |
 | **Real-time** | WebSocket (axum built-in)               |
 | **Auth**     | JWT (access tokens), Argon2 password hash |
 
@@ -103,30 +103,51 @@ TLS_MODE=self-signed ./target/release/im-server
 vast/
 ├── src/                  # Rust backend
 │   ├── api/              #  REST route handlers
-│   │   ├── auth.rs       #  Register / Login
-│   │   ├── channels.rs   #  Channel CRUD
+│   │   ├── auth.rs       #  Register / Login / Password reset
+│   │   ├── channels.rs   #  Channel CRUD + archive
+│   │   ├── channel_members.rs #  Member management
 │   │   ├── messages.rs   #  Message CRUD + threads
 │   │   ├── dm.rs         #  Direct messages
-│   │   ├── files.rs      #  File upload/download
+│   │   ├── files.rs      #  File upload/download (auth-guarded)
 │   │   ├── reactions.rs  #  Emoji reactions
 │   │   ├── search.rs     #  Full-text search
 │   │   ├── requests.rs   #  Join requests
 │   │   ├── invitations.rs#  Invitations
 │   │   └── presence.rs   #  Presence status
-│   ├── ws.rs             #  WebSocket handler
-│   ├── db.rs             #  Database pool + migrations
-│   ├── auth.rs           #  JWT + password utilities
+│   ├── auth/             #  Auth module
+│   │   ├── mod.rs        #  JWT + password utilities
+│   │   └── middleware.rs #  JWT auth middleware
+│   ├── ws/               #  WebSocket handler
+│   │   ├── mod.rs        #  Connection manager + hub
+│   │   └── protocol.rs   #  WS message protocol
+│   ├── db/               #  Database module
+│   │   └── mod.rs        #  Pool + migrations + queries
 │   ├── embed.rs          #  Frontend static file embedding
 │   ├── error.rs          #  Unified error types
+│   ├── lib.rs            #  App state + router setup
 │   └── main.rs           #  Server entrypoint
 ├── frontend/             # React SPA
 │   ├── src/
-│   │   ├── api/          #  API client
-│   │   ├── components/   #  UI components
-│   │   ├── pages/        #  Route pages
-│   │   ├── stores/       #  Zustand stores
-│   │   └── types/        #  TypeScript types
-│   └── ...
+│   │   ├── api/          #  API client (channels, dm, reactions, ...)
+│   │   ├── components/   #  UI components (MessageList, ChannelSidebar, ...)
+│   │   ├── pages/        #  Route pages (Login, Register, Search, DM, ...)
+│   │   ├── hooks/        #  Custom hooks (useWebSocket, useCursorSync, ...)
+│   │   ├── stores/       #  Zustand stores (auth, channel, message, ...)
+│   │   ├── types/        #  TypeScript type definitions
+│   │   └── test/         #  Test setup
+│   ├── e2e/              #  Playwright E2E tests
+│   │   ├── auth.spec.ts          #  Login / Register flows
+│   │   ├── channels.spec.ts      #  Channel CRUD
+│   │   ├── chat.spec.ts          #  Messaging
+│   │   ├── dm.spec.ts            #  Direct messages
+│   │   ├── threads.spec.ts       #  Thread replies
+│   │   ├── permissions.spec.ts   #  Channel membership
+│   │   ├── reactions.spec.ts     #  Emoji reactions
+│   │   ├── search.spec.ts        #  Full-text search
+│   │   └── helpers.ts            #  Shared E2E utilities
+│   └── vitest.config.ts #  Unit test config
+├── tests/                #  Rust integration tests
+│   └── integration/      #  175 tests across 4 suites
 ├── scripts/              # Utility scripts
 │   ├── build.sh          #  One-click build
 │   ├── bench.sh          #  Benchmark suite
@@ -267,6 +288,7 @@ sudo nginx -t && sudo systemctl reload nginx
 
 | Variable       | Default                    | Description                            |
 |---------------|----------------------------|----------------------------------------|
+| `DATABASE_URL`| `sqlite:vast.db`           | SQLite database path                   |
 | `JWT_SECRET`  | `dev-secret-change-me`     | JWT signing secret (REQUIRED in prod)  |
 | `INVITE_CODE` | `IM2024`                   | Registration invite code               |
 | `SERVER_PORT` | `3000`                     | HTTP listen port                       |
@@ -283,8 +305,14 @@ The service runs as `im-server` user with strict hardening:
 ## Development
 
 ```bash
-# Run tests (backend + frontend)
+# Run tests (backend + frontend unit)
 make test
+
+# Run E2E tests (requires servers running on :3000 + :5173)
+make test-e2e
+
+# Run Rust integration tests only (175 tests)
+make test-backend
 
 # Run lints
 make clippy

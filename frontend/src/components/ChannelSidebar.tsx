@@ -1,13 +1,17 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router'
 import { Plus, Hash, Lock, Users, Loader2, Menu, X } from 'lucide-react'
 import { useChannels, useCreateChannel } from '../api/channels'
+import { useDms } from '../api/dm'
 import { useChannelStore } from '../stores/channelStore'
 import { usePresenceStore } from '../stores/presenceStore'
 import { useUserStore } from '../stores/userStore'
+import { useAuthStore } from '../stores/authStore'
 import { ChannelListSkeleton } from './Skeletons'
 import { NoChannelsEmpty } from './EmptyState'
+import { CreateChannelDialog } from './CreateChannelDialog'
 import type { Channel } from '../types'
+import type { DmChannel } from '../api/dm'
 
 function ChannelIcon({ type }: { type: Channel['type'] }) {
   switch (type) {
@@ -44,6 +48,35 @@ function ChannelItem({
   )
 }
 
+function dmDisplayName(dm: DmChannel, currentUsername: string): string {
+  // Backend generates DM names as "user1, user2" — strip self.
+  if (!dm.is_direct && !dm.is_group_dm) return dm.name
+  const others = dm.name
+    .split(',')
+    .map((n) => n.trim())
+    .filter((n) => n && n !== currentUsername)
+  return others.length > 0 ? others.join(', ') : dm.name
+}
+
+function DmItem({
+  dm,
+  onClick,
+}: {
+  dm: DmChannel
+  onClick: () => void
+}) {
+  const currentUsername = useAuthStore((s) => s.user?.username ?? '')
+  return (
+    <button
+      onClick={onClick}
+      className="dm-item flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-sm text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+    >
+      <Users className="h-4 w-4 flex-shrink-0" />
+      <span className="truncate">{dmDisplayName(dm, currentUsername)}</span>
+    </button>
+  )
+}
+
 interface ChannelSidebarProps {
   onClose?: () => void
 }
@@ -51,12 +84,18 @@ interface ChannelSidebarProps {
 export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
   const navigate = useNavigate()
   const { channelId } = useParams<{ channelId: string }>()
-  const { isLoading } = useChannels()
+  const { data: channelData, isLoading } = useChannels()
+  const { data: dms } = useDms()
   const channels = useChannelStore((s) => s.channels)
+  const setChannels = useChannelStore((s) => s.setChannels)
   const setCurrentChannel = useChannelStore((s) => s.setCurrentChannel)
   const createChannel = useCreateChannel()
   const onlineUsers = usePresenceStore((s) => s.onlineUsers)
   const getName = useUserStore((s) => s.getName)
+
+  useEffect(() => {
+    if (channelData) setChannels(channelData)
+  }, [channelData, setChannels])
 
   const handleChannelClick = (channel: Channel) => {
     setCurrentChannel(channel.id)
@@ -64,20 +103,20 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
     onClose?.()
   }
 
-  const handleCreateChannel = () => {
-    const name = window.prompt('Channel name:')
-    if (!name?.trim()) return
-    const description = window.prompt('Description (optional):') ?? undefined
-    createChannel.mutate(
-      { name: name.trim(), description: description?.trim() || undefined },
-      {
-        onSuccess: (channel: Channel) => {
-          setCurrentChannel(channel.id)
-          navigate(`/channels/${channel.id}`)
-          onClose?.()
-        },
+  const [isCreateOpen, setIsCreateOpen] = useState(false)
+
+  const handleCreateChannel = (data: {
+    name: string
+    description?: string
+  }) => {
+    createChannel.mutate(data, {
+      onSuccess: (channel: Channel) => {
+        setIsCreateOpen(false)
+        setCurrentChannel(channel.id)
+        navigate(`/channels/${channel.id}`)
+        onClose?.()
       },
-    )
+    })
   }
 
   return (
@@ -86,7 +125,7 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
         <h2 className="font-semibold text-sm text-zinc-100">Channels</h2>
         <div className="flex items-center gap-1">
           <button
-            onClick={handleCreateChannel}
+            onClick={() => setIsCreateOpen(true)}
             disabled={createChannel.isPending}
             className="rounded-md p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
             aria-label="Create channel"
@@ -126,6 +165,26 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
           </div>
         )}
 
+        {dms && dms.length > 0 && (
+          <div className="mt-4 border-t border-zinc-800 pt-3">
+            <h3 className="px-3 pb-2 text-xs font-semibold text-zinc-500 uppercase tracking-wider">
+              Direct Messages
+            </h3>
+            <div className="flex flex-col gap-0.5">
+              {dms.map((dm) => (
+                <DmItem
+                  key={dm.id}
+                  dm={dm}
+                  onClick={() => {
+                    navigate(`/channels/${dm.id}`)
+                    onClose?.()
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
         {onlineUsers.size > 0 && (
           <div className="mt-4 border-t border-zinc-800 pt-3">
             <h3 className="px-3 pb-2 text-xs font-semibold text-zinc-500 uppercase tracking-wider">
@@ -150,6 +209,13 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
           </div>
         )}
       </div>
+
+      <CreateChannelDialog
+        isOpen={isCreateOpen}
+        isPending={createChannel.isPending}
+        onClose={() => setIsCreateOpen(false)}
+        onCreate={handleCreateChannel}
+      />
     </aside>
   )
 }

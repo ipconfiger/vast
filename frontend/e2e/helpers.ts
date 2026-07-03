@@ -32,15 +32,10 @@ export async function logoutUser(page: Page) {
 }
 
 export async function createChannel(page: Page, name: string): Promise<string> {
-  let promptCount = 0;
-  page.on('dialog', async (dialog) => {
-    promptCount++;
-    if (promptCount === 1) await dialog.accept(name);
-    else await dialog.accept('');
-  });
   await page.click('[aria-label="Create channel"]');
+  await page.fill('#dialog-input', name);
+  await page.click('#dialog-confirm');
   await page.waitForTimeout(500);
-  page.removeAllListeners('dialog');
   return name;
 }
 

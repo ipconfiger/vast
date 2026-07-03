@@ -2,12 +2,16 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createBrowserRouter, RouterProvider, Outlet } from 'react-router'
 import { ChannelListPage } from './pages/ChannelListPage'
 import { RequestsPage } from './pages/RequestsPage'
+import { SearchPage } from './pages/SearchPage'
+import { DirectMessagePage } from './pages/DirectMessagePage'
+import { ThreadView } from './pages/ThreadView'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 import AuthGuard, { PublicRouteGuard } from './components/AuthGuard'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { ToastContainer } from './components/ToastContainer'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
+import { useWebSocket } from './hooks/useWebSocket'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -21,6 +25,7 @@ const queryClient = new QueryClient({
 
 function AppLayout() {
   useKeyboardShortcuts()
+  useWebSocket()
   return (
     <>
       <Outlet />
@@ -70,15 +75,15 @@ const router = createBrowserRouter([
           },
           {
             path: '/channels/:channelId/thread/:messageId',
-            element: <div>Thread View</div>,
+            element: <ThreadView />,
           },
           {
             path: '/dm/:userId',
-            element: <div>Direct Message</div>,
+            element: <DirectMessagePage />,
           },
           {
             path: '/search',
-            element: <div>Search Page</div>,
+            element: <SearchPage />,
           },
           {
             path: '/',

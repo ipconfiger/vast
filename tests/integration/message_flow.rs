@@ -265,7 +265,7 @@ async fn message_lifecycle_integration_flow() {
     let (status, body) = request(
         &mut app,
         Method::GET,
-        &format!("/search?q=first"),
+        "/search?q=first",
         None,
         &token,
     )
@@ -279,7 +279,7 @@ async fn message_lifecycle_integration_flow() {
     let (status, body) = request(
         &mut app,
         Method::GET,
-        &format!("/search?q=message"),
+        "/search?q=message",
         None,
         &token,
     )
@@ -292,7 +292,7 @@ async fn message_lifecycle_integration_flow() {
     let (status, body) = request(
         &mut app,
         Method::GET,
-        &format!("/search?q=second"),
+        "/search?q=second",
         None,
         &token,
     )

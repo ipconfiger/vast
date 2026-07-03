@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useAuthStore } from '../stores/authStore'
+import { usePresenceStore } from '../stores/presenceStore'
+import { useReactionStore } from '../stores/reactionStore'
+import type { Reaction } from '../types'
 
 const WS_URL = 'ws://localhost:3000/ws'
 const MAX_RETRIES = 5
@@ -149,7 +152,8 @@ export function getWsManager(): WebSocketManager {
  * React hook that drives the global WebSocket connection lifecycle based
  * on the auth token. Returns the current connection status.
  *
- * Use `getWsManager()` to subscribe to events outside of React components.
+ * Also wires WS events into the presence/reaction stores. Use `getWsManager()`
+ * to subscribe to additional events outside of React components.
  */
 export function useWebSocket(): { status: WsStatus } {
   const token = useAuthStore((s) => s.token)
@@ -171,5 +175,52 @@ export function useWebSocket(): { status: WsStatus } {
     }
   }, [token, manager])
 
+  useWsEventSync(manager)
+
   return { status }
+}
+
+/**
+ * Subscribes the global presence/reaction stores to WS events emitted by
+ * the singleton manager. Each mount registers its own subscriptions and
+ * cleans up on unmount.
+ */
+function useWsEventSync(manager: WebSocketManager): void {
+  useEffect(() => {
+    const unsubs: Array<() => void> = [
+      manager.subscribe('reaction_added', (data) => {
+        const ev = data as { message_id: string; reaction: Reaction }
+        if (!ev || typeof ev.message_id !== 'string' || !ev.reaction) return
+        useReactionStore.getState().addReaction(ev.message_id, ev.reaction)
+      }),
+      manager.subscribe('reaction_removed', (data) => {
+        const ev = data as { message_id: string; reaction: Reaction }
+        if (!ev || typeof ev.message_id !== 'string' || !ev.reaction) return
+        useReactionStore.getState().removeReaction(ev.message_id, ev.reaction.id)
+      }),
+      manager.subscribe('typing_start', (data) => {
+        const ev = data as { channel_id: string; user_id: string }
+        if (!ev || typeof ev.channel_id !== 'string' || typeof ev.user_id !== 'string') return
+        usePresenceStore.getState().addTyping(ev.channel_id, ev.user_id)
+      }),
+      manager.subscribe('typing_stop', (data) => {
+        const ev = data as { channel_id: string; user_id: string }
+        if (!ev || typeof ev.channel_id !== 'string' || typeof ev.user_id !== 'string') return
+        usePresenceStore.getState().removeTyping(ev.channel_id, ev.user_id)
+      }),
+      manager.subscribe('user_online', (data) => {
+        const ev = data as { user_id: string }
+        if (!ev || typeof ev.user_id !== 'string') return
+        usePresenceStore.getState().addOnline(ev.user_id)
+      }),
+      manager.subscribe('user_offline', (data) => {
+        const ev = data as { user_id: string }
+        if (!ev || typeof ev.user_id !== 'string') return
+        usePresenceStore.getState().removeOnline(ev.user_id)
+      }),
+    ]
+    return () => {
+      unsubs.forEach((unsub) => unsub())
+    }
+  }, [manager])
 }

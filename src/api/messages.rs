@@ -659,7 +659,7 @@ mod tests {
         let (mut app, _, _, token, ws_pool) = setup().await;
         let channel_id = create_channel(&mut app, &token).await;
 
-        let mut rx = ws_pool.register("testuser", "test-conn", &[channel_id.clone()]);
+        let mut rx = ws_pool.register("testuser", "test-conn", std::slice::from_ref(&channel_id));
         while rx.try_recv().is_ok() {}
 
         let msg = send_message(&mut app, &channel_id, &token).await;
@@ -702,7 +702,7 @@ mod tests {
         let parent = send_message(&mut app, &channel_id, &token).await;
         let parent_id = parent["id"].as_i64().unwrap();
 
-        let mut rx = ws_pool.register("testuser", "test-conn", &[channel_id.clone()]);
+        let mut rx = ws_pool.register("testuser", "test-conn", std::slice::from_ref(&channel_id));
         while rx.try_recv().is_ok() {}
 
         let resp = request(

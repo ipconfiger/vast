@@ -2,7 +2,6 @@ import { useState, type FormEvent } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { useNavigate, Link } from 'react-router'
 import { Lock, User } from 'lucide-react'
-import { apiClient } from '../api/client'
 import { useAuthStore } from '../stores/authStore'
 import type { User as UserType } from '../types'
 
@@ -27,11 +26,25 @@ export default function LoginPage() {
     LoginError,
     { username: string; password: string }
   >({
-    mutationFn: (data) =>
-      apiClient<LoginResponse>('/auth/login', {
+    mutationFn: async (data) => {
+      // Use fetch directly for the login endpoint — the shared apiClient's 401
+      // handler calls store.logout() (correct for expired sessions on
+      // authenticated routes, but wrong for /auth/login where 401 means
+      // "bad credentials"). Calling logout mid-mutation interferes with the
+      // error lifecycle; bypassing it ensures mutation.error is set correctly.
+      const response = await fetch('/api/auth/login', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
-      }),
+      })
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}))
+        const message =
+          err.message ?? err.error?.message ?? 'Login failed. Please try again.'
+        throw { message } as LoginError
+      }
+      return (await response.json()) as LoginResponse
+    },
     onSuccess: (data) => {
       storeLogin(
         { access_token: data.access_token, refresh_token: data.refresh_token },

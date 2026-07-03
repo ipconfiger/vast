@@ -1,1 +1,0 @@
-{"scenario":8,"name":"Graceful Shutdown","signal":"SIGTERM","expected":"Port 3000 freed, process exits","actual":"Server stopped accepting connections, port freed","result":"PASS"}
