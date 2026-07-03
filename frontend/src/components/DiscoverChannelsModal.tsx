@@ -7,15 +7,10 @@ interface DiscoverChannelsModalProps {
   onClose: () => void
 }
 
-export function DiscoverChannelsModal({
-  isOpen,
-  onClose,
-}: DiscoverChannelsModalProps) {
+function DiscoverChannelsContent({ onClose }: { onClose: () => void }) {
   const [search, setSearch] = useState('')
   const { data, isLoading, isError } = useDiscoverChannels()
   const joinChannel = useJoinChannel()
-
-  if (!isOpen) return null
 
   const channels = data?.channels ?? []
 
@@ -145,4 +140,12 @@ export function DiscoverChannelsModal({
       </div>
     </div>
   )
+}
+
+export function DiscoverChannelsModal({
+  isOpen,
+  onClose,
+}: DiscoverChannelsModalProps) {
+  if (!isOpen) return null
+  return <DiscoverChannelsContent onClose={onClose} />
 }
