@@ -37,6 +37,11 @@ export function MessageList({ channelId }: MessageListProps) {
 
   const virtualItems = virtualizer.getVirtualItems()
 
+  const scrollToBottom = () => {
+    const el = parentRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }
+
   useEffect(() => {
     const prevCount = prevMessageCountRef.current
     const newCount = messages.length
@@ -47,25 +52,25 @@ export function MessageList({ channelId }: MessageListProps) {
       const isInitial = prevCount === 0
 
       if (isOwn || isInitial) {
-        virtualizer.scrollToIndex(newCount - 1, { align: 'end' })
+        scrollToBottom()
       } else {
         const scrollEl = parentRef.current
         if (scrollEl) {
           const isNearBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 200
           if (isNearBottom) {
-            virtualizer.scrollToIndex(newCount - 1, { align: 'end' })
+            scrollToBottom()
           }
         }
       }
     }
 
     prevMessageCountRef.current = newCount
-  }, [messages.length, virtualizer, user?.id])
+  }, [messages.length, user?.id])
 
   useEffect(() => {
     if (messages.length === 0) return
     const timer = setTimeout(() => {
-      virtualizer.scrollToIndex(messages.length - 1, { align: 'end' })
+      scrollToBottom()
     }, 100)
     return () => clearTimeout(timer)
   }, [channelId])
