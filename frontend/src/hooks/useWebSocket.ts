@@ -264,6 +264,22 @@ function useWsEventSync(manager: WebSocketManager): void {
         if (!ev || typeof ev.user_id !== 'string') return
         usePresenceStore.getState().removeOnline(ev.user_id)
       }),
+      manager.subscribe('member_added', (data) => {
+        const ev = data as { channel_id: string; user_id: string; username?: string }
+        if (!ev || typeof ev.channel_id !== 'string' || typeof ev.user_id !== 'string') return
+        const myId = useAuthStore.getState().user?.id
+        if (ev.user_id === myId) {
+          const container = document.querySelector('.toast-container')
+          if (container) {
+            const toast = document.createElement('div')
+            toast.className = 'bg-emerald-600 text-white px-4 py-2 rounded-lg shadow-lg text-sm cursor-pointer hover:bg-emerald-500'
+            toast.textContent = 'You have been added to a new channel!'
+            toast.onclick = () => { window.history.pushState(null, '', '/channels/' + ev.channel_id); window.location.reload() }
+            container.appendChild(toast)
+            setTimeout(() => toast.remove(), 8000)
+          }
+        }
+      }),
       manager.subscribe('member_removed', (data) => {
         const ev = data as { channel_id: string; user_id: string }
         if (!ev || typeof ev.channel_id !== 'string' || typeof ev.user_id !== 'string') return

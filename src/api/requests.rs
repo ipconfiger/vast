@@ -228,6 +228,18 @@ pub async fn approve_join_request(
     .execute(&state.pool)
     .await?;
 
+    let approved_username = sqlx::query_scalar::<_, String>("SELECT username FROM users WHERE id = ?")
+        .bind(&requester_id).fetch_one(&state.pool).await.unwrap_or_else(|_| "Unknown".to_string());
+
+    state.ws_pool.notify_channel(
+        &channel_id,
+        ServerEvent::MemberAdded {
+            channel_id: channel_id.clone(),
+            user_id: requester_id.clone(),
+            username: approved_username,
+        },
+    );
+
     // Update request status
     sqlx::query("UPDATE join_requests SET status = 'approved' WHERE id = ?")
         .bind(&request_id)
