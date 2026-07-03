@@ -76,7 +76,7 @@ export function ReactionPicker({ messageId, isOwn }: ReactionPickerProps) {
       </button>
 
       {open && (
-        <div className="absolute bottom-full left-0 mb-2 z-50 flex items-center gap-0.5 rounded-lg border border-zinc-700 bg-zinc-800 px-1.5 py-1.5 shadow-xl">
+        <div className={`absolute bottom-full mb-2 z-50 flex items-center gap-0.5 rounded-lg border border-zinc-700 bg-zinc-800 px-1.5 py-1.5 shadow-xl whitespace-nowrap ${isOwn ? 'right-0' : 'left-0'}`}>
           {QUICK_EMOJIS.map((emoji) => {
             const active = userHasReacted(emoji)
             return (
