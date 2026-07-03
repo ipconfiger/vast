@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { apiClient } from '../api/client'
+import { useUploadFile } from '../api/files'
 import { useAuthStore } from '../stores/authStore'
+import { toast } from '../stores/toastStore'
 import { useNavigate } from 'react-router'
 import { ArrowLeft, Save, CheckCircle, Camera } from 'lucide-react'
 
@@ -14,6 +16,7 @@ export default function ProfilePage() {
   const [saved, setSaved] = useState(false)
 const [uploading, setUploading] = useState(false)
 const [avatarSrc, setAvatarSrc] = useState<string | null>(null)
+  const uploadMutation = useUploadFile()
 
   const saveMutation = useMutation({
     mutationFn: (display_name: string) =>
@@ -51,7 +54,9 @@ const [avatarSrc, setAvatarSrc] = useState<string | null>(null)
         objectUrl = URL.createObjectURL(blob)
         setAvatarSrc(objectUrl)
       })
-      .catch(() => {})
+      .catch(() => {
+        toast.error('Failed to load avatar')
+      })
     return () => {
       if (objectUrl) URL.revokeObjectURL(objectUrl)
       controller.abort()
@@ -92,19 +97,28 @@ const [avatarSrc, setAvatarSrc] = useState<string | null>(null)
                   const file = e.target.files?.[0]
                   if (!file) return
                   setUploading(true)
-                  const token = useAuthStore.getState().token
-                  const fd = new FormData()
-                  fd.append('file', file)
+                  // Phase flag prevents mislabeling a PATCH failure as "Upload
+                  // failed" — that would trigger re-uploads and orphan files.
+                  let phase: 'upload' | 'patch' = 'upload'
                   try {
-                    const res = await fetch('/api/files/upload', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd })
-                    const data = await res.json()
-                    if (data.url) {
-                      await apiClient('/auth/profile', { method: 'PATCH', body: JSON.stringify({ avatar_url: data.url }) })
-                      if (user) setUser({ ...user, avatar_url: data.url })
+                    const data = await uploadMutation.mutateAsync(file)
+                    phase = 'patch'
+                    await apiClient('/auth/profile', {
+                      method: 'PATCH',
+                      body: JSON.stringify({ avatar_url: data.url }),
+                    })
+                    if (user) setUser({ ...user, avatar_url: data.url })
+                  } catch (err) {
+                    if (phase === 'upload') {
+                      const msg = err instanceof Error ? err.message : String(err)
+                      toast.error('Upload failed: ' + msg)
+                    } else {
+                      toast.error('Image saved, profile update failed')
                     }
-                  } catch(e) {}
-                  finally { setUploading(false) }
-                  e.target.value = ''
+                  } finally {
+                    setUploading(false)
+                    e.target.value = ''
+                  }
                 }} />
               </label>
             </div>

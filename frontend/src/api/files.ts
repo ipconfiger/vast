@@ -1,5 +1,5 @@
 import { useMutation } from '@tanstack/react-query'
-import { useAuthStore } from '../stores/authStore'
+import { apiClient } from './client'
 
 interface UploadResponse {
   file_id: string
@@ -9,23 +9,21 @@ interface UploadResponse {
   mime_type: string
 }
 
-export function useUploadFile() {
-  const token = useAuthStore((s) => s.token)
+export type { UploadResponse }
 
+export function useUploadFile() {
   return useMutation({
     mutationFn: async (file: File): Promise<UploadResponse> => {
       const formData = new FormData()
       formData.append('file', file)
-      const response = await fetch('/api/files/upload', {
+      // apiClient injects the Bearer token, prepends API_BASE, and throws
+      // ApiClientError on non-2xx (it does the res.ok check internally).
+      // FormData bodies skip the json Content-Type so the browser can set
+      // the multipart boundary (T5).
+      return apiClient<UploadResponse>('/files/upload', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
         body: formData,
       })
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({}))
-        throw new Error(err.error?.message || err.message || 'Upload failed')
-      }
-      return response.json()
     },
   })
 }
