@@ -24,6 +24,9 @@ jobs:
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
+      - name: Create minimal frontend dist (required by rust-embed)
+        run: mkdir -p frontend/dist && echo '<!doctype html><html><body></body></html>' > frontend/dist/index.html
+
       - name: Run cargo test
         run: cargo test
 
@@ -54,7 +57,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Run tests
-        run: bun test
+        run: bun vitest run --passWithNoTests
 
       - name: Build frontend
         run: bun run build

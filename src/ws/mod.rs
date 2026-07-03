@@ -165,10 +165,10 @@ impl ConnectionPool {
     }
 
     pub fn subscribe_channel(&self, connection_id: &str, channel_id: &str) {
-        if let Some(mut meta) = self.connections.get_mut(connection_id) {
-            if !meta.subscribed_channels.iter().any(|c| c == channel_id) {
-                meta.subscribed_channels.push(channel_id.to_string());
-            }
+        if let Some(mut meta) = self.connections.get_mut(connection_id)
+            && !meta.subscribed_channels.iter().any(|c| c == channel_id)
+        {
+            meta.subscribed_channels.push(channel_id.to_string());
         }
     }
 
