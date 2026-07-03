@@ -172,6 +172,74 @@ pub async fn send_message(
         let args = body.payload.get("args").and_then(|v| v.as_str()).unwrap_or("");
         let role = _membership.0;
 
+        // `/train` is special: it creates a train record + a real visible
+        // `_train` message (NOT a `_command_result` echo). Short-circuit
+        // before the regular command-result block below.
+        if cmd == "train" {
+            let title = args.trim();
+            if title.is_empty() {
+                return Err(AppError::BadRequest(
+                    "Usage: /train <title>".to_string(),
+                ));
+            }
+            let train_id = Uuid::new_v4().to_string();
+            sqlx::query(
+                "INSERT INTO trains (id, channel_id, creator_id, title, replies) \
+                 VALUES (?, ?, ?, ?, '[]')",
+            )
+            .bind(&train_id)
+            .bind(&channel_id)
+            .bind(&user_id)
+            .bind(title)
+            .execute(&state.pool)
+            .await?;
+
+            let payload = serde_json::json!({
+                "_train": true,
+                "train_id": train_id,
+                "title": title,
+            });
+            let payload_str = serde_json::to_string(&payload).unwrap_or_default();
+            let msg_id = Uuid::new_v4().to_string();
+            let inserted: MessageRow = sqlx::query_as::<_, MessageRow>(
+                "INSERT INTO messages (msg_id, channel_id, sender_id, msg_type, payload) \
+                 VALUES (?, ?, ?, 'text', ?) \
+                 RETURNING id, msg_id, channel_id, sender_id, msg_type, payload, \
+                           thread_parent_id, deleted_at, edited_at, created_at",
+            )
+            .bind(&msg_id)
+            .bind(&channel_id)
+            .bind(&user_id)
+            .bind(&payload_str)
+            .fetch_one(&state.pool)
+            .await?;
+
+            state.ws_pool.notify_channel(
+                &channel_id,
+                ServerEvent::NewMsg {
+                    channel_id: channel_id.clone(),
+                    cursor: inserted.id,
+                    sender_id: user_id.clone(),
+                    msg_type: "text".to_string(),
+                    preview: String::new(),
+                },
+            );
+
+            let mut resp = MessageResponse::from(inserted);
+            let (username, display_name, avatar_url) =
+                sqlx::query_as::<_, (String, String, String)>(
+                    "SELECT username, display_name, avatar_url FROM users WHERE id = ?",
+                )
+                .bind(&user_id)
+                .fetch_one(&state.pool)
+                .await
+                .unwrap_or_default();
+            resp.sender_name = username;
+            resp.sender_display_name = display_name;
+            resp.sender_avatar_url = avatar_url;
+            return Ok((axum::http::StatusCode::CREATED, Json(resp)));
+        }
+
         let result = match cmd {
             "quit" => {
                 let is_dm: (bool,) = sqlx::query_as("SELECT is_direct FROM channels WHERE id = ?")

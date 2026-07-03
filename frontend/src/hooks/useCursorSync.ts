@@ -23,6 +23,14 @@ export function useCursorSync(): void {
       }
     })
 
+    // Train queries are keyed by train_id, not channel — invalidate
+    // unconditionally (unlike new_msg above which gates on currentChannelId).
+    const unsubTrain = manager.subscribe('train_updated', (data: unknown) => {
+      const payload = data as { train_id?: string } | null
+      if (!payload || typeof payload.train_id !== 'string') return
+      queryClient.invalidateQueries({ queryKey: ['train', payload.train_id] })
+    })
+
     const unsubReconnect = manager.onReconnect(() => {
       if (currentChannelId) {
         manager.subscribeChannel(currentChannelId)
@@ -33,6 +41,7 @@ export function useCursorSync(): void {
     return () => {
       manager.unsubscribeChannel(currentChannelId)
       unsubMsg()
+      unsubTrain()
       unsubReconnect()
     }
   }, [currentChannelId, manager, queryClient])

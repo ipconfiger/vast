@@ -10,3 +10,5 @@ frontend/test-results/
 .omo/
 .sisyphus/
 .omc/
+.playwright-mcp/
+db/*.db

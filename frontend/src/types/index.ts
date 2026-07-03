@@ -84,3 +84,20 @@ export interface InvitationWithChannel extends Invitation {
 export interface ChannelMemberWithUser extends ChannelMember {
   user?: User
 }
+
+export interface TrainReply {
+  user_id: string
+  username: string
+  display_name?: string | null
+  content: string
+  created_at: number
+}
+
+export interface Train {
+  id: string
+  channel_id: string
+  creator_id: string
+  title: string
+  replies: TrainReply[]
+  created_at: number
+}

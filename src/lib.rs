@@ -121,6 +121,11 @@ pub fn api_routes() -> Router<Arc<AppState>> {
             delete(api::messages::delete_message),
         )
         .route(
+            "/trains/{train_id}",
+            get(api::trains::get_train),
+        )
+        .route("/trains/{train_id}/join", post(api::trains::join_train))
+        .route(
             "/files/upload",
             post(api::files::upload_file)
                 .layer(RequestBodyLimitLayer::new(api::files::MAX_UPLOAD_SIZE)),

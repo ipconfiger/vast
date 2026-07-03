@@ -62,6 +62,10 @@ pub enum ServerEvent {
         channel_id: String,
         user_id: String,
     },
+    TrainUpdated {
+        train_id: String,
+        channel_id: String,
+    },
     Error {
         code: String,
         message: String,

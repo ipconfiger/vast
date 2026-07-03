@@ -8,6 +8,7 @@ const COMMANDS = [
   { cmd: 'quit', desc: 'Delete channel (owner)', args: false },
   { cmd: 'list', desc: 'List members (owner/admin)', args: false },
   { cmd: 'kick', desc: 'Kick a member (owner/admin)', args: true, argHint: '<username>' },
+  { cmd: 'train', desc: '发起接龙', args: true, argHint: '<标题>' },
 ]
 
 interface MessageInputProps {

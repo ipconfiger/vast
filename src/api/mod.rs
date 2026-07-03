@@ -9,6 +9,7 @@ pub mod presence;
 pub mod reactions;
 pub mod requests;
 pub mod search;
+pub mod trains;
 
 use axum::{routing::{delete, get, post, put}, Router};
 use std::sync::Arc;
@@ -28,6 +29,8 @@ pub fn routes() -> Router<Arc<AppState>> {
             get(messages::get_thread),
         )
         .route("/messages/{message_id}", delete(messages::delete_message))
+        .route("/trains/{train_id}", get(trains::get_train))
+        .route("/trains/{train_id}/join", post(trains::join_train))
         .route(
             "/messages/{message_id}/reactions",
             get(reactions::get_reactions).post(reactions::add_reaction),

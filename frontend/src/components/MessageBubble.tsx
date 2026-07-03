@@ -7,6 +7,7 @@ import { TextMessage } from './TextMessage'
 import { CodeMessage } from './CodeMessage'
 import { ReactionPicker } from './ReactionPicker'
 import { ReactionBar } from './ReactionBar'
+import { TrainMessage } from './TrainMessage'
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return bytes + ' B'
@@ -174,6 +175,15 @@ export function MessageBubble({
 }: MessageBubbleProps) {
   const senderAvatarSrc = useAuthImage(senderAvatar)
   const renderContent = () => {
+    if (message.payload?._train) {
+      return (
+        <TrainMessage
+          trainId={message.payload.train_id}
+          title={message.payload.title}
+          channelId={message.channel_id}
+        />
+      )
+    }
     switch (message.msg_type) {
       case 'text':
         if (message.payload?._join_request) {
