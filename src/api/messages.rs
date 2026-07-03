@@ -486,6 +486,49 @@ pub async fn delete_message(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
+/// GET /api/raw?url=<encoded_url>
+/// Proxy for fetching raw file content to bypass CORS restrictions
+pub async fn raw_proxy(
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<axum::response::Response, AppError> {
+    let url = params.get("url").ok_or_else(|| AppError::BadRequest("Missing url parameter".into()))?;
+    let url = urlencoding::decode(url).map_err(|_| AppError::BadRequest("Invalid url encoding".into()))?;
+
+    // Only allow HTTP/HTTPS URLs
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(AppError::BadRequest("Only http/https URLs allowed".into()));
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| AppError::Internal(format!("Failed to create HTTP client: {e}")))?;
+
+    let response = client.get(url.as_ref())
+        .header("User-Agent", "VAST-IM-RawProxy/1.0")
+        .send()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Failed to fetch URL: {e}")))?;
+
+    if !response.status().is_success() {
+        return Err(AppError::NotFound(format!("Remote server returned {}", response.status())));
+    }
+
+    let content_type = response.headers().get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("text/plain")
+        .to_string();
+
+    let body = response.text().await
+        .map_err(|e| AppError::Internal(format!("Failed to read response: {e}")))?;
+
+    Ok(axum::response::Response::builder()
+        .header("content-type", content_type)
+        .header("access-control-allow-origin", "*")
+        .body(axum::body::Body::from(body))
+        .unwrap())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

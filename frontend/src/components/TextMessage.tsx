@@ -31,7 +31,7 @@ function RawContentPreview({ url }: { url: string }) {
   useEffect(() => {
     setLoading(true)
     setError(false)
-    fetch(toRawUrl(url))
+    fetch(`/api/raw?url=${encodeURIComponent(toRawUrl(url))}`)
       .then(r => { if (!r.ok) throw new Error(); return r.text() })
       .then(t => { setContent(t.slice(0, 50000)); setLoading(false) })
       .catch(() => { setError(true); setLoading(false) })

@@ -87,6 +87,7 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> Json<serde_json
 pub fn api_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/health", get(health_check))
+        .route("/raw", get(api::messages::raw_proxy))
         .route(
             "/channels",
             get(api::channels::list_channels).post(api::channels::create_channel),
