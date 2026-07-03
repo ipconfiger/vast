@@ -26,7 +26,11 @@ function EmptyStateBase({ icon, title, description, action }: EmptyStateProps) {
   )
 }
 
-export function NoChannelsEmpty() {
+export function NoChannelsEmpty({
+  onBrowse,
+}: {
+  onBrowse?: () => void
+}) {
   return (
     <EmptyStateBase
       icon={<Hash className="h-5 w-5" />}
@@ -40,12 +44,24 @@ export function NoChannelsEmpty() {
             </span>
             Click the + button above to create a channel
           </div>
-          <div className="flex items-center gap-2">
-            <span className="flex h-5 w-5 items-center justify-center rounded bg-zinc-800 text-zinc-400">
-              <Search className="h-3 w-3" />
-            </span>
-            Browse public channels to find your team
-          </div>
+          {onBrowse ? (
+            <button
+              onClick={onBrowse}
+              className="flex items-center gap-2 text-xs text-zinc-400 transition-colors hover:text-zinc-200"
+            >
+              <span className="flex h-5 w-5 items-center justify-center rounded bg-zinc-800 text-zinc-400">
+                <Search className="h-3 w-3" />
+              </span>
+              Browse public channels to find your team
+            </button>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="flex h-5 w-5 items-center justify-center rounded bg-zinc-800 text-zinc-400">
+                <Search className="h-3 w-3" />
+              </span>
+              Browse public channels to find your team
+            </div>
+          )}
         </div>
       }
     />

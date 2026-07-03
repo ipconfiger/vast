@@ -4,13 +4,42 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::auth::{self, middleware::AuthenticatedUser, TokenPair};
 use crate::error::{created_response, no_content, ok_response, AppError};
 use crate::AppState;
+
+// ---------------------------------------------------------------------------
+// Response types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct UserInfo {
+    pub id: String,
+    pub username: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AuthResponse {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_in: u32,
+    pub user: UserInfo,
+}
+
+impl AuthResponse {
+    fn new(tokens: TokenPair, id: String, username: String) -> Self {
+        Self {
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+            expires_in: tokens.expires_in,
+            user: UserInfo { id, username },
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Request types
@@ -50,7 +79,7 @@ struct UserRow {
 pub async fn register(
     State(state): State<Arc<AppState>>,
     Json(body): Json<RegisterRequest>,
-) -> Result<(StatusCode, Json<TokenPair>), AppError> {
+) -> Result<(StatusCode, Json<AuthResponse>), AppError> {
     let username = body.username.trim().to_string();
 
     // Validate username: 3-32 alphanumeric chars
@@ -157,18 +186,16 @@ pub async fn register(
 
     tx.commit().await.map_err(AppError::from)?;
 
-    // Create token pair
+    // Create token pair and response with user info
     let tokens = auth::create_token_pair(&user_id, &state.config.jwt_secret)
         .map_err(AppError::from)?;
 
-    created_response(tokens)
+    created_response(AuthResponse::new(tokens, user_id, username))
 }
-
-/// POST /api/auth/login
 pub async fn login(
     State(state): State<Arc<AppState>>,
     Json(body): Json<LoginRequest>,
-) -> Result<(StatusCode, Json<TokenPair>), AppError> {
+) -> Result<(StatusCode, Json<AuthResponse>), AppError> {
     let user = sqlx::query_as::<_, UserRow>(
         "SELECT id, username, password_hash FROM users WHERE username = ?",
     )
@@ -187,7 +214,7 @@ pub async fn login(
         ));
     }
 
-    // Create token pair
+    // Create token pair and response with user info
     let tokens = auth::create_token_pair(&user.id, &state.config.jwt_secret)
         .map_err(AppError::from)?;
 
@@ -211,10 +238,8 @@ pub async fn login(
     .await
     .map_err(AppError::from)?;
 
-    ok_response(tokens)
+    ok_response(AuthResponse::new(tokens, user.id, user.username))
 }
-
-/// POST /api/auth/refresh
 pub async fn refresh(
     State(state): State<Arc<AppState>>,
     Json(body): Json<RefreshRequest>,

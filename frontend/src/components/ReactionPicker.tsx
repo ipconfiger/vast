@@ -18,7 +18,7 @@ export function ReactionPicker({ messageId, isOwn }: ReactionPickerProps) {
   const { reactionsByMessage } = useReactionStore()
   const user = useAuthStore((s) => s.user)
 
-  const reactions = reactionsByMessage.get(messageId) ?? []
+  const reactions = reactionsByMessage.get(String(messageId)) ?? []
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -37,9 +37,10 @@ export function ReactionPicker({ messageId, isOwn }: ReactionPickerProps) {
       if (pending) return
       setPending(emoji)
       try {
-        await toggleReaction(messageId, emoji)
-      } catch {
-        // mutation ignored, WS event will sync state
+        const result = await toggleReaction(messageId, emoji)
+        console.log('[reaction] toggled:', emoji, result)
+      } catch (err) {
+        console.error('[reaction] failed:', err)
       } finally {
         setPending(null)
       }

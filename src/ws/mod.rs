@@ -38,9 +38,6 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 /// Maximum time without any message from the client before we disconnect.
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Capacity of each per-channel broadcast channel.
-const BROADCAST_CHANNEL_CAPACITY: usize = 256;
-
 // ---------------------------------------------------------------------------
 // Connection metadata
 // ---------------------------------------------------------------------------
@@ -58,26 +55,14 @@ pub struct ConnectionMeta {
 // ---------------------------------------------------------------------------
 
 /// WebSocket connection pool that tracks user connections,
-/// per-channel broadcasters, and connection metadata.
+/// a global broadcast channel, and connection metadata.
 ///
 /// All methods take `&self` — interior mutability via DashMap.
 pub struct ConnectionPool {
-    /// user_id -> set of active connection_ids
-    pub user_connections: DashMap<UserId, DashSet<ConnectionId>>,
-    /// channel_id -> broadcast sender for server-event fan-out
-    pub channel_broadcasters: DashMap<ChannelId, broadcast::Sender<ServerEvent>>,
-    /// connection_id -> metadata
-    pub connections: DashMap<ConnectionId, ConnectionMeta>,
-    /// Keeps a broadcast channel alive for connections that haven't
-    /// subscribed to any real channel yet. Its subscribers simply
-    /// block forever (the select! loop handles other branches).
-    #[allow(dead_code)]
-    idle_tx: broadcast::Sender<ServerEvent>,
-
-    /// Tracks typing state: `"{channel_id}:{user_id}"` -> last-seen `Instant`.
-    /// Entries older than 5 seconds are considered stale and cleaned
-    /// up lazily.
-    pub typing_timeouts: DashMap<String, Instant>,
+    user_connections: DashMap<UserId, DashSet<ConnectionId>>,
+    connections: DashMap<ConnectionId, ConnectionMeta>,
+    global_tx: broadcast::Sender<ServerEvent>,
+    typing_timeouts: DashMap<String, Instant>,
 }
 
 impl Default for ConnectionPool {
@@ -88,26 +73,24 @@ impl Default for ConnectionPool {
 
 impl ConnectionPool {
     pub fn new() -> Self {
-        let (idle_tx, _) = broadcast::channel(1);
+        let (global_tx, _) = broadcast::channel(256);
         Self {
             user_connections: DashMap::new(),
-            channel_broadcasters: DashMap::new(),
             connections: DashMap::new(),
-            idle_tx,
+            global_tx,
             typing_timeouts: DashMap::new(),
         }
     }
 
     /// Register a new WebSocket connection for a user.
     ///
-    /// Subscribes the connection to the given channels and returns
-    /// a broadcast receiver that the per-connection send loop polls.
+    /// Subscribes the connection to the global broadcast channel and
+    /// returns a receiver that the per-connection send loop polls.
     #[instrument(skip(self))]
     pub fn register(
         &self,
         user_id: &str,
         connection_id: &str,
-        channels: &[String],
     ) -> broadcast::Receiver<ServerEvent> {
         self.user_connections
             .entry(user_id.to_string())
@@ -119,49 +102,17 @@ impl ConnectionPool {
             ConnectionMeta {
                 connection_id: connection_id.to_string(),
                 user_id: user_id.to_string(),
-                subscribed_channels: channels.to_vec(),
+                subscribed_channels: Vec::new(),
                 joined_at: Instant::now(),
             },
         );
 
-        let mut rx: Option<broadcast::Receiver<ServerEvent>> = None;
-        for channel_id in channels {
-            let tx = self
-                .channel_broadcasters
-                .entry(channel_id.clone())
-                .or_insert_with(|| {
-                    let (tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
-                    tx
-                })
-                .clone();
-            rx = Some(tx.subscribe());
-        }
-
-    // Broadcast presence-online to every subscribed channel.
-    let presence = ServerEvent::Presence {
-        user_id: user_id.to_string(),
-        status: "online".to_string(),
-    };
-    for channel_id in channels {
-        self.broadcast_to_channel(channel_id, &presence);
+        self.global_tx.subscribe()
     }
 
-    // If no channels provided, subscribe to the idle sender
-    // (blocks forever — avoids busy-looping on RecvError::Closed).
-    rx.unwrap_or_else(|| self.idle_tx.subscribe())
-    }
-
-    /// Remove a connection, broadcast presence-offline, and clean up
-    /// empty channel broadcasters.
+    /// Remove a connection and broadcast presence-offline.
     #[instrument(skip(self))]
     pub fn unregister(&self, user_id: &str, connection_id: &str) {
-        // Snapshot subscribed channels *before* removing the connection.
-        let channels: Vec<String> = self
-            .connections
-            .get(connection_id)
-            .map(|m| m.subscribed_channels.clone())
-            .unwrap_or_default();
-
         self.connections.remove(connection_id);
 
         if let Some(entry) = self.user_connections.get_mut(user_id) {
@@ -172,54 +123,29 @@ impl ConnectionPool {
             }
         }
 
-        // Broadcast presence-offline to every subscribed channel.
+        // Broadcast presence-offline globally.
         let presence = ServerEvent::Presence {
             user_id: user_id.to_string(),
             status: "offline".to_string(),
         };
-        for channel_id in &channels {
-            self.broadcast_to_channel(channel_id, &presence);
-
-            // Remove the per-channel broadcaster if no receivers remain.
-            let is_empty = self
-                .channel_broadcasters
-                .get(channel_id)
-                .map(|tx| tx.receiver_count() == 0)
-                .unwrap_or(true);
-            if is_empty {
-                self.channel_broadcasters.remove(channel_id);
-            }
-        }
+        let _ = self.global_tx.send(presence);
 
         debug!(user_id, connection_id, "Unregistered WebSocket connection");
     }
 
-    /// Fan-out a ServerEvent to all connections subscribed to a channel.
+    /// Fan-out a ServerEvent via the global broadcast channel.
     ///
-    /// Returns the number of active subscribers that received the event.
+    /// Returns 0 — the return value is retained for compatibility with
+    /// existing callers (mainly tests) but is no longer meaningful since
+    /// all events go through the single global channel.
     #[instrument(skip(self, event))]
-    pub fn broadcast_to_channel(&self, channel_id: &str, event: &ServerEvent) -> usize {
-        let Some(sender) = self.channel_broadcasters.get(channel_id) else {
-            return 0;
-        };
-
-        match sender.send(event.clone()) {
-            Ok(n) => {
-                debug!(channel_id, n, "Broadcast event");
-                n
-            }
-            Err(_) => {
-                0
-            }
-        }
+    pub fn broadcast_to_channel(&self, _channel_id: &str, event: &ServerEvent) -> usize {
+        self.global_tx.send(event.clone()).ok();
+        0
     }
 
     /// Return the set of user IDs currently connected to a channel.
     pub fn get_channel_members(&self, channel_id: &str) -> Vec<UserId> {
-        if !self.channel_broadcasters.contains_key(channel_id) {
-            return vec![];
-        }
-
         let mut members: Vec<UserId> = Vec::new();
         for entry in self.connections.iter() {
             if entry.subscribed_channels.contains(&channel_id.to_string())
@@ -236,6 +162,20 @@ impl ConnectionPool {
     /// DB insert to fan-out `NewMsg` / `MsgDeleted` / etc.
     pub fn notify_channel(&self, channel_id: &str, event: ServerEvent) -> usize {
         self.broadcast_to_channel(channel_id, &event)
+    }
+
+    pub fn subscribe_channel(&self, connection_id: &str, channel_id: &str) {
+        if let Some(mut meta) = self.connections.get_mut(connection_id) {
+            if !meta.subscribed_channels.iter().any(|c| c == channel_id) {
+                meta.subscribed_channels.push(channel_id.to_string());
+            }
+        }
+    }
+
+    pub fn unsubscribe_channel(&self, connection_id: &str, channel_id: &str) {
+        if let Some(mut meta) = self.connections.get_mut(connection_id) {
+            meta.subscribed_channels.retain(|c| c != channel_id);
+        }
     }
 
     // ── Typing indicators ──────────────────────────────────────────
@@ -307,7 +247,7 @@ pub async fn ws_handler(
 /// Multiplexed loop that reads from three sources:
 ///
 /// 1. WebSocket receive — parse incoming ClientEvent messages.
-/// 2. Broadcast channel — push ServerEvent fan-out to the client.
+/// 2. Global broadcast channel — push ServerEvent fan-out to the client.
 /// 3. Heartbeat timer — send periodic Ping frames (15 s interval,
 ///    60 s idle timeout).
 #[instrument(skip(socket, pool))]
@@ -315,8 +255,7 @@ async fn handle_socket(mut socket: WebSocket, user_id: UserId, pool: Arc<Connect
     let connection_id = Uuid::new_v4().to_string();
     info!(user_id, connection_id, "WebSocket connection opened");
 
-    let initial_channels: Vec<String> = Vec::new();
-    let mut broadcast_rx = pool.register(&user_id, &connection_id, &initial_channels);
+    let mut broadcast_rx = pool.register(&user_id, &connection_id);
     let mut last_heartbeat = Instant::now();
 
     loop {
@@ -346,6 +285,14 @@ async fn handle_socket(mut socket: WebSocket, user_id: UserId, pool: Arc<Connect
                             }
                             Ok(ClientEvent::TypingStop { channel_id }) => {
                                 pool.remove_typing(&channel_id, &user_id);
+                            }
+                            Ok(ClientEvent::Subscribe { channel_id }) => {
+                                info!(user_id, %channel_id, %connection_id, "subscribe");
+                                pool.subscribe_channel(&connection_id, &channel_id);
+                            }
+                            Ok(ClientEvent::Unsubscribe { channel_id }) => {
+                                info!(user_id, %channel_id, %connection_id, "unsubscribe");
+                                pool.unsubscribe_channel(&connection_id, &channel_id);
                             }
                             Err(e) => {
                                 warn!(%e, "Failed to parse ClientEvent from client");
@@ -451,7 +398,9 @@ mod tests {
         let pool = make_pool();
         assert!(pool.connections.is_empty());
         assert!(pool.user_connections.is_empty());
-        assert!(pool.channel_broadcasters.is_empty());
+        assert!(pool.typing_timeouts.is_empty());
+        // Global channel exists but has no subscribers yet.
+        assert_eq!(pool.global_tx.receiver_count(), 0);
     }
 
     // ── Register ─────────────────────────────────────────────────────
@@ -459,49 +408,48 @@ mod tests {
     #[test]
     fn register_inserts_connection() {
         let pool = make_pool();
-        let channels = vec!["ch-1".to_string()];
-        let _rx = pool.register("user-a", "conn-1", &channels);
+        let _rx = pool.register("user-a", "conn-1");
 
         assert!(pool.connections.contains_key("conn-1"));
         let meta = pool.connections.get("conn-1").unwrap();
         assert_eq!(meta.user_id, "user-a");
-        assert_eq!(meta.subscribed_channels, channels);
+        assert!(meta.subscribed_channels.is_empty());
         assert_eq!(meta.connection_id, "conn-1");
     }
 
     #[test]
     fn register_inserts_into_user_connections() {
         let pool = make_pool();
-        let _rx = pool.register("user-a", "conn-1", &["ch-1".into()]);
+        let _rx = pool.register("user-a", "conn-1");
 
         let set = pool.user_connections.get("user-a").unwrap();
         assert!(set.contains("conn-1"));
     }
 
     #[test]
-    fn register_creates_channel_broadcaster() {
+    fn register_subscribes_to_global_channel() {
         let pool = make_pool();
-        let _rx = pool.register("user-a", "conn-1", &["ch-1".into()]);
+        let _rx = pool.register("user-a", "conn-1");
 
-        assert!(pool.channel_broadcasters.contains_key("ch-1"));
+        // Global channel should have one subscriber.
+        assert_eq!(pool.global_tx.receiver_count(), 1);
     }
 
     #[test]
-    fn register_multiple_channels_subscribes_to_last() {
+    fn register_multiple_connections_increase_receiver_count() {
         let pool = make_pool();
-        let channels = vec!["ch-a".to_string(), "ch-b".to_string()];
-        let _rx = pool.register("user-a", "conn-1", &channels);
+        let _rx1 = pool.register("user-a", "conn-1");
+        let _rx2 = pool.register("user-b", "conn-2");
 
-        // Both broadcasters exist.
-        assert!(pool.channel_broadcasters.contains_key("ch-a"));
-        assert!(pool.channel_broadcasters.contains_key("ch-b"));
+        assert_eq!(pool.global_tx.receiver_count(), 2);
     }
 
     #[test]
-    fn register_with_empty_channels_uses_idle_tx() {
+    fn register_receiver_is_valid() {
         let pool = make_pool();
-        let rx = pool.register("user-a", "conn-1", &[]);
-        // Idle receiver: no events, not closed.
+        let rx = pool.register("user-a", "conn-1");
+
+        // Receiver should not be closed and starts empty.
         assert_eq!(rx.len(), 0);
     }
 
@@ -510,7 +458,7 @@ mod tests {
     #[test]
     fn unregister_removes_connection() {
         let pool = make_pool();
-        let _rx = pool.register("user-a", "conn-1", &["ch-1".into()]);
+        let _rx = pool.register("user-a", "conn-1");
         pool.unregister("user-a", "conn-1");
 
         assert!(!pool.connections.contains_key("conn-1"));
@@ -519,7 +467,7 @@ mod tests {
     #[test]
     fn unregister_removes_from_user_connections() {
         let pool = make_pool();
-        let _rx = pool.register("user-a", "conn-1", &["ch-1".into()]);
+        let _rx = pool.register("user-a", "conn-1");
         pool.unregister("user-a", "conn-1");
 
         // User entry should be gone (only connection).
@@ -529,8 +477,8 @@ mod tests {
     #[test]
     fn unregister_keeps_user_with_other_connections() {
         let pool = make_pool();
-        let _rx1 = pool.register("user-a", "conn-1", &["ch-1".into()]);
-        let _rx2 = pool.register("user-a", "conn-2", &["ch-1".into()]);
+        let _rx1 = pool.register("user-a", "conn-1");
+        let _rx2 = pool.register("user-a", "conn-2");
         pool.unregister("user-a", "conn-1");
 
         let set = pool.user_connections.get("user-a").unwrap();
@@ -541,13 +489,13 @@ mod tests {
     #[test]
     fn unregister_broadcasts_presence_offline() {
         let pool = make_pool();
-        let mut rx = pool.register("user-a", "conn-1", &["ch-1".into()]);
-        // Drain the subscription message (none expected, but let's be safe).
+        let mut rx = pool.register("user-a", "conn-1");
+        // Drain any initial events (none expected from register).
         while rx.try_recv().is_ok() {}
 
         pool.unregister("user-a", "conn-1");
 
-        // The presence-offline event should have been broadcast.
+        // The presence-offline event should have been broadcast globally.
         let event = rx.try_recv().expect("expected presence-offline event");
         match event {
             ServerEvent::Presence { user_id, status } => {
@@ -559,25 +507,20 @@ mod tests {
     }
 
     #[test]
-    fn unregister_cleans_up_empty_broadcaster() {
+    fn unregister_presence_offline_delivered_to_all() {
         let pool = make_pool();
-        let _rx = pool.register("user-a", "conn-1", &["ch-1".into()]);
-        drop(_rx); // simulate handle_socket going out of scope
+        let mut rx1 = pool.register("user-a", "conn-1");
+        let mut rx2 = pool.register("user-b", "conn-2");
+        while rx1.try_recv().is_ok() {}
+        while rx2.try_recv().is_ok() {}
+
         pool.unregister("user-a", "conn-1");
 
-        // Broadcaster should have been removed (0 receivers left).
-        assert!(!pool.channel_broadcasters.contains_key("ch-1"));
-    }
-
-    #[test]
-    fn unregister_keeps_broadcaster_if_others_listening() {
-        let pool = make_pool();
-        let _rx1 = pool.register("user-a", "conn-1", &["ch-1".into()]);
-        let _rx2 = pool.register("user-b", "conn-2", &["ch-1".into()]);
-        pool.unregister("user-a", "conn-1");
-
-        // Broadcaster still alive (conn-2 still subscribed).
-        assert!(pool.channel_broadcasters.contains_key("ch-1"));
+        // Both receivers should get the presence-offline event.
+        let event1 = rx1.try_recv().expect("rx1 expected presence-offline");
+        assert!(matches!(event1, ServerEvent::Presence { user_id, status: _ } if user_id == "user-a"));
+        let event2 = rx2.try_recv().expect("rx2 expected presence-offline");
+        assert!(matches!(event2, ServerEvent::Presence { user_id, status: _ } if user_id == "user-a"));
     }
 
     // ── Broadcast ────────────────────────────────────────────────────
@@ -585,8 +528,8 @@ mod tests {
     #[test]
     fn broadcast_to_channel_delivers_to_subscriber() {
         let pool = make_pool();
-        let mut rx = pool.register("user-a", "conn-1", &["ch-1".into()]);
-        // Drain the presence-online emitted during register.
+        let mut rx = pool.register("user-a", "conn-1");
+        // Drain any initial events.
         while rx.try_recv().is_ok() {}
 
         let n = pool.broadcast_to_channel(
@@ -595,7 +538,7 @@ mod tests {
                 channel_id: "ch-1".into(),
             },
         );
-        assert_eq!(n, 1);
+        assert_eq!(n, 0);
 
         let event = rx.try_recv().unwrap();
         match event {
@@ -619,14 +562,38 @@ mod tests {
     #[test]
     fn broadcast_to_channel_no_subscribers_returns_zero() {
         let pool = make_pool();
-        let rx = pool.register("user-a", "conn-1", &["ch-1".into()]);
+        let rx = pool.register("user-a", "conn-1");
         drop(rx); // no active receivers
         let n = pool.broadcast_to_channel(
             "ch-1",
             &ServerEvent::Pong,
         );
-        // send() with no receivers returns Ok(0).
+        // With no receivers, send returns Ok(0); our wrapper also returns 0.
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn broadcast_to_channel_all_subscribers_receive() {
+        let pool = make_pool();
+        let mut rx1 = pool.register("user-a", "conn-1");
+        let mut rx2 = pool.register("user-b", "conn-2");
+        // Drain any initial events.
+        while rx1.try_recv().is_ok() {}
+        while rx2.try_recv().is_ok() {}
+
+        pool.broadcast_to_channel(
+            "ch-1",
+            &ServerEvent::NewMsg {
+                channel_id: "ch-1".into(),
+                cursor: 1,
+                sender_id: "sender".into(),
+                msg_type: "text".into(),
+                preview: "hello".into(),
+            },
+        );
+
+        assert!(rx1.try_recv().is_ok());
+        assert!(rx2.try_recv().is_ok());
     }
 
     // ── Notify channel ───────────────────────────────────────────────
@@ -634,8 +601,8 @@ mod tests {
     #[test]
     fn notify_channel_pushes_event() {
         let pool = make_pool();
-        let mut rx = pool.register("user-a", "conn-1", &["ch-1".into()]);
-        // Drain the presence-online emitted during register.
+        let mut rx = pool.register("user-a", "conn-1");
+        // Drain any initial events.
         while rx.try_recv().is_ok() {}
 
         let n = pool.notify_channel(
@@ -648,7 +615,7 @@ mod tests {
                 preview: "hello".into(),
             },
         );
-        assert_eq!(n, 1);
+        assert_eq!(n, 0);
 
         let event = rx.try_recv().unwrap();
         match event {
@@ -657,58 +624,38 @@ mod tests {
         }
     }
 
-    // ── Register broadcasts presence online ──────────────────────────
+    // ── Subscribe / Unsubscribe ──────────────────────────────────────
 
     #[test]
-    fn register_broadcasts_presence_online() {
+    fn subscribe_channel_adds_to_meta() {
         let pool = make_pool();
-        // Observer subscribes first so it can witness the broadcast.
-        let mut rx_obs = pool.register("observer", "conn-obs", &["ch-1".into()]);
-        // Drain the observer's own presence-online (emitted during register).
-        while rx_obs.try_recv().is_ok() {}
+        let _rx = pool.register("user-a", "conn-1");
+        pool.subscribe_channel("conn-1", "ch-1");
 
-        let _rx_user = pool.register("user-a", "conn-1", &["ch-1".into()]);
-
-        let event = rx_obs.try_recv().expect("expected presence-online");
-        match event {
-            ServerEvent::Presence { user_id, status } => {
-                assert_eq!(user_id, "user-a");
-                assert_eq!(status, "online");
-            }
-            other => panic!("expected Presence, got {other:?}"),
-        }
+        let meta = pool.connections.get("conn-1").unwrap();
+        assert!(meta.subscribed_channels.contains(&"ch-1".to_string()));
     }
 
     #[test]
-    fn register_broadcasts_presence_to_all_channels() {
+    fn subscribe_channel_does_not_duplicate() {
         let pool = make_pool();
-        let mut rx_ch1 = pool.register("obs-a", "conn-obs-a", &["ch-1".into()]);
-        let mut rx_ch2 = pool.register("obs-b", "conn-obs-b", &["ch-2".into()]);
-        while rx_ch1.try_recv().is_ok() {}
-        while rx_ch2.try_recv().is_ok() {}
+        let _rx = pool.register("user-a", "conn-1");
+        pool.subscribe_channel("conn-1", "ch-1");
+        pool.subscribe_channel("conn-1", "ch-1");
 
-        let channels = vec!["ch-1".to_string(), "ch-2".to_string()];
-        let _rx_user = pool.register("user-a", "conn-1", &channels);
+        let meta = pool.connections.get("conn-1").unwrap();
+        assert_eq!(meta.subscribed_channels.len(), 1);
+    }
 
-        // Observer on ch-1 sees online.
-        let event = rx_ch1.try_recv().expect("expected presence on ch-1");
-        match event {
-            ServerEvent::Presence { user_id, status } => {
-                assert_eq!(user_id, "user-a");
-                assert_eq!(status, "online");
-            }
-            other => panic!("expected Presence, got {other:?}"),
-        }
+    #[test]
+    fn unsubscribe_channel_removes_from_meta() {
+        let pool = make_pool();
+        let _rx = pool.register("user-a", "conn-1");
+        pool.subscribe_channel("conn-1", "ch-1");
+        pool.unsubscribe_channel("conn-1", "ch-1");
 
-        // Observer on ch-2 sees online.
-        let event = rx_ch2.try_recv().expect("expected presence on ch-2");
-        match event {
-            ServerEvent::Presence { user_id, status } => {
-                assert_eq!(user_id, "user-a");
-                assert_eq!(status, "online");
-            }
-            other => panic!("expected Presence, got {other:?}"),
-        }
+        let meta = pool.connections.get("conn-1").unwrap();
+        assert!(!meta.subscribed_channels.contains(&"ch-1".to_string()));
     }
 
     // ── Channel members ──────────────────────────────────────────────
@@ -716,9 +663,13 @@ mod tests {
     #[test]
     fn get_channel_members_returns_unique_user_ids() {
         let pool = make_pool();
-        let _rx1 = pool.register("user-a", "conn-1", &["ch-1".into()]);
-        let _rx2 = pool.register("user-b", "conn-2", &["ch-1".into()]);
-        let _rx3 = pool.register("user-a", "conn-3", &["ch-1".into()]); // same user
+        let _rx1 = pool.register("user-a", "conn-1");
+        let _rx2 = pool.register("user-b", "conn-2");
+        let _rx3 = pool.register("user-a", "conn-3"); // same user
+
+        pool.subscribe_channel("conn-1", "ch-1");
+        pool.subscribe_channel("conn-2", "ch-1");
+        pool.subscribe_channel("conn-3", "ch-1");
 
         let members = pool.get_channel_members("ch-1");
         assert_eq!(members.len(), 2);
@@ -729,6 +680,9 @@ mod tests {
     #[test]
     fn get_channel_members_unknown_channel_returns_empty() {
         let pool = make_pool();
+        let _rx = pool.register("user-a", "conn-1");
+        pool.subscribe_channel("conn-1", "ch-1");
+
         let members = pool.get_channel_members("no-such-channel");
         assert!(members.is_empty());
     }
@@ -736,13 +690,26 @@ mod tests {
     #[test]
     fn get_channel_members_respects_channel_boundaries() {
         let pool = make_pool();
-        let _rx1 = pool.register("user-a", "conn-1", &["ch-1".into()]);
-        let _rx2 = pool.register("user-b", "conn-2", &["ch-2".into()]);
+        let _rx1 = pool.register("user-a", "conn-1");
+        let _rx2 = pool.register("user-b", "conn-2");
+
+        pool.subscribe_channel("conn-1", "ch-1");
+        pool.subscribe_channel("conn-2", "ch-2");
 
         let ch1 = pool.get_channel_members("ch-1");
         let ch2 = pool.get_channel_members("ch-2");
         assert_eq!(ch1, vec!["user-a".to_string()]);
         assert_eq!(ch2, vec!["user-b".to_string()]);
+    }
+
+    #[test]
+    fn get_channel_members_requires_explicit_subscribe() {
+        let pool = make_pool();
+        // Register but never subscribe_channel — should not show up as member.
+        let _rx = pool.register("user-a", "conn-1");
+
+        let members = pool.get_channel_members("ch-1");
+        assert!(members.is_empty());
     }
 
     // ── Typing indicators ────────────────────────────────────────────
@@ -791,8 +758,8 @@ mod tests {
     #[test]
     fn typing_broadcast_delivers_to_other_users() {
         let pool = make_pool();
-        let mut rx_other = pool.register("user-b", "conn-b", &["ch-1".into()]);
-        // Drain the presence-online broadcast from register.
+        let mut rx_other = pool.register("user-b", "conn-b");
+        // Drain any initial events.
         while rx_other.try_recv().is_ok() {}
 
         pool.broadcast_to_channel(

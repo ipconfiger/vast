@@ -29,6 +29,7 @@ export function useCreateChannel() {
       apiClient<Channel>('/channels', { method: 'POST', body: JSON.stringify(data) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['channels'] })
+      queryClient.invalidateQueries({ queryKey: ['discover-channels'] })
     },
   })
 }
@@ -41,6 +42,34 @@ export function useMessages(channelId: string | null) {
       return data.messages
     },
     enabled: !!channelId,
+  })
+}
+
+interface DiscoverChannel {
+  id: string
+  name: string
+  description: string
+  owner_name: string
+  member_count: number
+  is_member: boolean
+}
+
+export function useDiscoverChannels() {
+  return useQuery({
+    queryKey: ['discover-channels'],
+    queryFn: () =>
+      apiClient<{ channels: DiscoverChannel[] }>('/channels/discover'),
+  })
+}
+
+export function useJoinChannel() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (channelId: string) =>
+      apiClient('/channels/' + channelId + '/join-request', { method: 'POST' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['discover-channels'] })
+    },
   })
 }
 

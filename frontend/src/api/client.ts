@@ -1,6 +1,8 @@
 import { useAuthStore } from '../stores/authStore'
 
-const API_BASE = '/api'
+// Use VITE_API_BASE env var when set, otherwise fall back to relative /api
+// (works via Vite proxy in dev, same-origin in production)
+const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
 let refreshPromise: Promise<string | null> | null = null
 

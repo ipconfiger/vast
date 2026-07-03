@@ -2,9 +2,12 @@ import { useEffect, useState } from 'react'
 import { useAuthStore } from '../stores/authStore'
 import { usePresenceStore } from '../stores/presenceStore'
 import { useReactionStore } from '../stores/reactionStore'
+import { refreshAccessToken } from '../api/client'
 import type { Reaction } from '../types'
 
-const WS_URL = 'ws://localhost:3000/ws'
+// Build WebSocket URL from the current page origin so it works in any
+// environment — dev (Vite proxy), production (same origin), or custom deployments.
+const WS_URL = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
 const MAX_RETRIES = 5
 const BASE_DELAY = 1000
 
@@ -21,19 +24,38 @@ export class WebSocketManager {
   private listeners = new Map<string, Set<Listener>>()
   private reconnectCallbacks = new Set<() => void>()
   private statusListeners = new Set<StatusListener>()
+  private pendingSubscribes = new Set<string>()
   private _status: WsStatus = 'disconnected'
 
   /** Connect (or reconnect) with the given token. */
   connect(token: string): void {
-    if (this.ws && this.token === token && this._status === 'connected') return
+    const alreadyConnected = this.ws && this.token === token && this._status === 'connected'
+    const alreadyConnecting = this.token === token && this._status === 'connecting'
+    if (alreadyConnected || alreadyConnecting) return
+    console.log('[WS] connect called, closing prev:', !!this.ws, 'status:', this._status)
     this.token = token
     this.retryCount = 0
     this.cancelRetry()
     this.doConnect()
   }
 
+  /** Subscribe the connection to a channel so WS events are delivered. */
+  subscribeChannel(channelId: string): void {
+    this.pendingSubscribes.add(channelId)
+    if (!this.ws || this._status !== 'connected') return
+    this.ws.send(JSON.stringify({ type: 'subscribe', channel_id: channelId }))
+  }
+
+  /** Unsubscribe from a channel. */
+  unsubscribeChannel(channelId: string): void {
+    this.pendingSubscribes.delete(channelId)
+    if (!this.ws || this._status !== 'connected') return
+    this.ws.send(JSON.stringify({ type: 'unsubscribe', channel_id: channelId }))
+  }
+
   /** Tear down the connection. */
   disconnect(): void {
+    console.log('[WS] disconnect called')
     this.cancelRetry()
     this.ws?.close()
     this.ws = null
@@ -86,6 +108,9 @@ export class WebSocketManager {
       const isReconnect = this.retryCount > 0
       this.retryCount = 0
       this.setStatus('connected')
+      this.pendingSubscribes.forEach((ch) => {
+        ws.send(JSON.stringify({ type: 'subscribe', channel_id: ch }))
+      })
       if (isReconnect) {
         this.reconnectCallbacks.forEach((fn) => fn())
       }
@@ -109,6 +134,7 @@ export class WebSocketManager {
         return
       }
       if (!parsed || typeof parsed.type !== 'string') return
+      console.log('[WS] recv:', parsed.type, (parsed as any).channel_id?.slice(0, 8) || '')
       const typeListeners = this.listeners.get(parsed.type)
       if (typeListeners) {
         const payload = parsed.data ?? parsed
@@ -121,7 +147,13 @@ export class WebSocketManager {
     if (this.retryCount >= MAX_RETRIES) return
     const delay = Math.min(BASE_DELAY * Math.pow(2, this.retryCount), 16000)
     this.retryCount++
-    this.retryTimer = setTimeout(() => this.doConnect(), delay)
+    this.retryTimer = setTimeout(async () => {
+      const prevToken = this.token
+      await refreshAccessToken()
+      if (this.token === prevToken && this.token) {
+        this.doConnect()
+      }
+    }, delay)
   }
 
   private setStatus(s: WsStatus): void {
@@ -188,6 +220,20 @@ export function useWebSocket(): { status: WsStatus } {
 function useWsEventSync(manager: WebSocketManager): void {
   useEffect(() => {
     const unsubs: Array<() => void> = [
+      manager.subscribe('reaction_update', (data) => {
+        const ev = data as { message_cursor?: number; reactions?: Array<{ emoji: string; count: number }> }
+        if (!ev || ev.message_cursor == null || !ev.reactions) return
+        console.log('[WS] reaction_update for msg', ev.message_cursor, ev.reactions)
+        const msgId = String(ev.message_cursor)
+        const reactions = ev.reactions.map((r: { emoji: string; count: number }) => ({
+          id: `${msgId}_${r.emoji}`,
+          message_id: msgId,
+          user_id: '',
+          emoji: r.emoji,
+          created_at: '',
+        }))
+        useReactionStore.getState().setReactions(msgId, reactions)
+      }),
       manager.subscribe('reaction_added', (data) => {
         const ev = data as { message_id: string; reaction: Reaction }
         if (!ev || typeof ev.message_id !== 'string' || !ev.reaction) return

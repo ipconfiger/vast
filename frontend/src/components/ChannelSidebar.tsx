@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router'
-import { Plus, Hash, Lock, Users, Loader2, Menu, X } from 'lucide-react'
+import { Plus, Hash, Lock, Users, Loader2, Menu, X, Globe } from 'lucide-react'
 import { useChannels, useCreateChannel } from '../api/channels'
 import { useDms } from '../api/dm'
 import { useChannelStore } from '../stores/channelStore'
@@ -10,6 +10,7 @@ import { useAuthStore } from '../stores/authStore'
 import { ChannelListSkeleton } from './Skeletons'
 import { NoChannelsEmpty } from './EmptyState'
 import { CreateChannelDialog } from './CreateChannelDialog'
+import { DiscoverChannelsModal } from './DiscoverChannelsModal'
 import type { Channel } from '../types'
 import type { DmChannel } from '../api/dm'
 
@@ -104,6 +105,7 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
   }
 
   const [isCreateOpen, setIsCreateOpen] = useState(false)
+  const [isDiscoverOpen, setIsDiscoverOpen] = useState(false)
 
   const handleCreateChannel = (data: {
     name: string
@@ -124,6 +126,13 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
       <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
         <h2 className="font-semibold text-sm text-zinc-100">Channels</h2>
         <div className="flex items-center gap-1">
+          <button
+            onClick={() => setIsDiscoverOpen(true)}
+            className="rounded-md p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
+            aria-label="Discover channels"
+          >
+            <Globe className="h-4 w-4" />
+          </button>
           <button
             onClick={() => setIsCreateOpen(true)}
             disabled={createChannel.isPending}
@@ -151,7 +160,7 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
         {isLoading ? (
           <ChannelListSkeleton />
         ) : channels.length === 0 ? (
-          <NoChannelsEmpty />
+          <NoChannelsEmpty onBrowse={() => setIsDiscoverOpen(true)} />
         ) : (
           <div className="flex flex-col gap-0.5">
             {channels.map((channel) => (
@@ -215,6 +224,11 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
         isPending={createChannel.isPending}
         onClose={() => setIsCreateOpen(false)}
         onCreate={handleCreateChannel}
+      />
+
+      <DiscoverChannelsModal
+        isOpen={isDiscoverOpen}
+        onClose={() => setIsDiscoverOpen(false)}
       />
     </aside>
   )

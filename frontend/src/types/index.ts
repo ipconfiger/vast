@@ -30,6 +30,7 @@ export interface Message {
   msg_id: string
   channel_id: string
   sender_id: string
+  sender_name?: string
   msg_type: string
   payload: any
   thread_parent_id?: string | null

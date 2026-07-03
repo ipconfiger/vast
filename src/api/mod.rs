@@ -18,6 +18,7 @@ use crate::AppState;
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/channels", get(channels::list_channels).post(channels::create_channel))
+        .route("/channels/discover", get(channels::discover_channels))
         .route("/channels/{id}", get(channels::get_channel).patch(channels::update_channel))
         .route("/channels/{id}/archive", post(channels::archive_channel))
         .route("/channels/{id}/unarchive", post(channels::unarchive_channel))

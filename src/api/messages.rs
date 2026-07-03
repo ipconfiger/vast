@@ -4,6 +4,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -57,6 +58,7 @@ pub struct MessageResponse {
     pub msg_id: String,
     pub channel_id: String,
     pub sender_id: String,
+    pub sender_name: String,
     pub msg_type: String,
     pub payload: serde_json::Value,
     pub thread_parent_id: Option<i64>,
@@ -84,7 +86,8 @@ impl From<MessageRow> for MessageResponse {
             id: row.id,
             msg_id: row.msg_id,
             channel_id: row.channel_id,
-            sender_id: row.sender_id,
+            sender_id: row.sender_id.clone(),
+            sender_name: row.sender_id,
             msg_type: row.msg_type,
             payload,
             thread_parent_id: row.thread_parent_id,
@@ -254,10 +257,33 @@ pub async fn get_messages(
     .await?;
 
     let has_more = (rows.len() as i64) > limit;
+
+    let sender_ids: Vec<String> = rows.iter().map(|r| r.sender_id.clone()).collect();
+    let usernames: HashMap<String, String> = if sender_ids.is_empty() {
+        HashMap::new()
+    } else {
+        let placeholders: Vec<String> = sender_ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
+        let query = format!(
+            "SELECT id, username FROM users WHERE id IN ({})",
+            placeholders.join(",")
+        );
+        let mut q = sqlx::query_as::<_, (String, String)>(&query);
+        for id in &sender_ids {
+            q = q.bind(id);
+        }
+        q.fetch_all(&state.pool).await.unwrap_or_default().into_iter().collect()
+    };
+
     let messages: Vec<MessageResponse> = rows
         .into_iter()
         .take(limit as usize)
-        .map(MessageResponse::from)
+        .map(|r| {
+            let mut msg = MessageResponse::from(r);
+            if let Some(name) = usernames.get(&msg.sender_id).cloned() {
+                msg.sender_name = name;
+            }
+            msg
+        })
         .collect();
 
     let next_cursor = messages
@@ -659,7 +685,7 @@ mod tests {
         let (mut app, _, _, token, ws_pool) = setup().await;
         let channel_id = create_channel(&mut app, &token).await;
 
-        let mut rx = ws_pool.register("testuser", "test-conn", std::slice::from_ref(&channel_id));
+        let mut rx = ws_pool.register("testuser", "test-conn");
         while rx.try_recv().is_ok() {}
 
         let msg = send_message(&mut app, &channel_id, &token).await;
@@ -702,7 +728,7 @@ mod tests {
         let parent = send_message(&mut app, &channel_id, &token).await;
         let parent_id = parent["id"].as_i64().unwrap();
 
-        let mut rx = ws_pool.register("testuser", "test-conn", std::slice::from_ref(&channel_id));
+        let mut rx = ws_pool.register("testuser", "test-conn");
         while rx.try_recv().is_ok() {}
 
         let resp = request(

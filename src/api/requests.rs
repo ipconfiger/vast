@@ -101,6 +101,27 @@ pub async fn create_join_request(
         .fetch_one(&state.pool)
         .await?;
 
+    // Insert a join_request message into the channel so the owner can see
+    // and act on it directly from the message list.
+    // Uses msg_type "text" with _join_request marker in payload to avoid
+    // needing a schema migration for the CHECK constraint on msg_type.
+    let msg_id = Uuid::new_v4().to_string();
+    let payload = serde_json::json!({
+        "_join_request": true,
+        "request_id": &request_id,
+        "username": &username,
+        "status": "pending"
+    });
+    sqlx::query(
+        "INSERT INTO messages (msg_id, channel_id, sender_id, msg_type, payload) VALUES (?, ?, ?, 'text', ?)",
+    )
+    .bind(&msg_id)
+    .bind(&channel_id)
+    .bind(&user.0)
+    .bind(serde_json::to_string(&payload).unwrap_or_default())
+    .execute(&state.pool)
+    .await?;
+
     // WS notify the channel (owner/admin will see the JoinRequest event)
     state.ws_pool.notify_channel(
         &channel_id,
@@ -165,7 +186,7 @@ pub async fn approve_join_request(
     State(state): State<Arc<AppState>>,
     user: AuthenticatedUser,
     Path(request_id): Path<String>,
-) -> Result<StatusCode, AppError> {
+) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
     // Get the request
     let row = sqlx::query_as::<_, (String, String, String, String)>(
         "SELECT jr.id, jr.channel_id, jr.user_id, jr.status \
@@ -178,6 +199,14 @@ pub async fn approve_join_request(
     .ok_or_else(|| AppError::NotFound("Join request not found".to_string()))?;
 
     let (_, channel_id, requester_id, status) = row;
+
+    let username = sqlx::query_scalar::<_, String>(
+        "SELECT username FROM users WHERE id = ?",
+    )
+    .bind(&requester_id)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or_else(|_| "Unknown".to_string());
 
     // Check user is owner or admin of the channel
     require_role(&state.pool, &user.0, &channel_id, &["owner", "admin"]).await?;
@@ -205,7 +234,23 @@ pub async fn approve_join_request(
         .execute(&state.pool)
         .await?;
 
-    Ok(StatusCode::OK)
+    let msg_payload = serde_json::json!({
+        "request_id": &request_id,
+        "status": "approved",
+        "_join_request": true,
+        "username": &username
+    });
+    sqlx::query(
+        "UPDATE messages SET payload = ? WHERE msg_type = 'text' AND sender_id = ? AND channel_id = ? AND payload LIKE ?",
+    )
+    .bind(serde_json::to_string(&msg_payload).unwrap_or_default())
+    .bind(&requester_id)
+    .bind(&channel_id)
+    .bind(format!("%{}%", &request_id))
+    .execute(&state.pool)
+    .await?;
+
+    Ok((StatusCode::OK, Json(serde_json::json!({"status": "approved", "request_id": request_id}))))
 }
 
 /// PUT /api/requests/{id}/reject
@@ -216,7 +261,7 @@ pub async fn reject_join_request(
     State(state): State<Arc<AppState>>,
     user: AuthenticatedUser,
     Path(request_id): Path<String>,
-) -> Result<StatusCode, AppError> {
+) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
     // Get the request
     let row = sqlx::query_as::<_, (String, String, String, String)>(
         "SELECT jr.id, jr.channel_id, jr.user_id, jr.status \
@@ -247,7 +292,7 @@ pub async fn reject_join_request(
         .execute(&state.pool)
         .await?;
 
-    Ok(StatusCode::OK)
+    Ok((StatusCode::OK, Json(serde_json::json!({"status": "rejected", "request_id": request_id}))))
 }
 
 // ---------------------------------------------------------------------------

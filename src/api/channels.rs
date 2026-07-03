@@ -61,6 +61,21 @@ pub struct ChannelListResponse {
     pub channels: Vec<ChannelWithRole>,
 }
 
+#[derive(Debug, Serialize, FromRow)]
+pub struct DiscoverChannel {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub owner_name: String,
+    pub member_count: i64,
+    pub is_member: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DiscoverChannelResponse {
+    pub channels: Vec<DiscoverChannel>,
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -133,6 +148,31 @@ pub async fn list_channels(
     .await?;
 
     Ok(Json(ChannelListResponse { channels }))
+}
+
+/// GET /api/channels/discover
+///
+/// List channels available for discovery — all non-DM, non-archived channels.
+/// Shows whether the current user is already a member.
+pub async fn discover_channels(
+    State(state): State<Arc<AppState>>,
+    user: AuthenticatedUser,
+) -> Result<Json<DiscoverChannelResponse>, AppError> {
+    let channels = sqlx::query_as::<_, DiscoverChannel>(
+        "SELECT c.id, c.name, c.description, \
+                u.username as owner_name, \
+                (SELECT COUNT(*) FROM channel_members WHERE channel_id = c.id) as member_count, \
+                EXISTS(SELECT 1 FROM channel_members WHERE channel_id = c.id AND user_id = ?) as is_member \
+         FROM channels c \
+         JOIN users u ON c.owner_id = u.id \
+         WHERE c.is_direct = 0 AND c.is_archived = 0 \
+         ORDER BY member_count DESC, c.created_at DESC",
+    )
+    .bind(&user.0)
+    .fetch_all(&state.pool)
+    .await?;
+
+    Ok(Json(DiscoverChannelResponse { channels }))
 }
 
 /// GET /api/channels/{id}

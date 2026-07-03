@@ -92,6 +92,10 @@ pub fn api_routes() -> Router<Arc<AppState>> {
             get(api::channels::list_channels).post(api::channels::create_channel),
         )
         .route(
+            "/channels/discover",
+            get(api::channels::discover_channels),
+        )
+        .route(
             "/channels/{id}",
             get(api::channels::get_channel).patch(api::channels::update_channel),
         )
@@ -165,6 +169,9 @@ pub fn api_routes() -> Router<Arc<AppState>> {
 pub fn build_app(state: Arc<AppState>) -> Router {
     let allowed_origins = [
         "http://localhost:5173".parse::<HeaderValue>().unwrap(),
+        "http://localhost:3000".parse::<HeaderValue>().unwrap(),
+        "http://0.0.0.0:3000".parse::<HeaderValue>().unwrap(),
+        "http://127.0.0.1:3000".parse::<HeaderValue>().unwrap(),
     ];
 
     let cors = CorsLayer::new()

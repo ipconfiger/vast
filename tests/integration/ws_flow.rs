@@ -213,7 +213,7 @@ async fn ws_connect_and_receive_new_message_event() {
     .await;
     let messages = body["messages"].as_array().unwrap();
     assert!(!messages.is_empty(), "B should see A's message");
-    assert_eq!(messages[0]["payload"]["text"], "hello ws");
+    assert_eq!(messages[messages.len() - 1]["payload"]["text"], "hello ws");
 
     server_handle.abort();
 }

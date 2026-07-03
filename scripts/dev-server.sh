@@ -40,7 +40,14 @@ if $BUILD_FRONTEND && [ -d "frontend" ]; then
     echo ""
 fi
 
-# 2. 设置环境变量
+# 2. 加载 .env（不覆盖已存在的环境变量）
+if [ -f ".env" ]; then
+    set -a
+    source .env
+    set +a
+fi
+
+# 仅在未设置时提供默认值
 export RUST_LOG="${RUST_LOG:-info,im_server=debug,tower_http=debug}"
 export JWT_SECRET="${JWT_SECRET:-dev-secret-change-me-in-production}"
 export INVITE_CODE="${INVITE_CODE:-IM2024}"
@@ -49,13 +56,18 @@ export TLS_MODE="${TLS_MODE:-none}"
 
 echo "🔧 环境变量:"
 echo "   RUST_LOG=$RUST_LOG"
-echo "   JWT_SECRET=$JWT_SECRET"
+echo "   JWT_SECRET=${JWT_SECRET:0:8}..."
 echo "   INVITE_CODE=$INVITE_CODE"
 echo "   SERVER_PORT=$SERVER_PORT"
 echo "   TLS_MODE=$TLS_MODE"
 echo ""
 
-# 3. 启动
+# 3. 强制 Cargo 检测前端变化后重新链接
+#    rust-embed 在编译时嵌入 frontend/dist/，但 Cargo 不追踪这些文件。
+#    touch src/embed.rs 确保每次运行都重新链接最新的前端。
+touch src/embed.rs
+
+# 4. 启动
 if [ -n "$RELEASE_FLAG" ]; then
     echo "🚀 cargo run --release"
     cargo run --release

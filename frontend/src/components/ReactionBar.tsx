@@ -15,7 +15,7 @@ interface ReactionGroup {
 }
 
 export function ReactionBar({ messageId }: ReactionBarProps) {
-  const reactions = useReactionStore((s) => s.reactionsByMessage.get(messageId)) ?? []
+  const reactions = useReactionStore((s) => s.reactionsByMessage.get(String(messageId))) ?? []
   const user = useAuthStore((s) => s.user)
 
   const grouped: ReactionGroup[] = groupReactions(reactions, user?.id)

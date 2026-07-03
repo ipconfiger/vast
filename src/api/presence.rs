@@ -69,12 +69,10 @@ mod tests {
     #[tokio::test]
     async fn test_get_presence_returns_online_users() {
         let state = make_state();
-        state
-            .ws_pool
-            .register("user-a", "conn-1", &["ch-1".into()]);
-        state
-            .ws_pool
-            .register("user-b", "conn-2", &["ch-1".into()]);
+        state.ws_pool.register("user-a", "conn-1");
+        state.ws_pool.subscribe_channel("conn-1", "ch-1");
+        state.ws_pool.register("user-b", "conn-2");
+        state.ws_pool.subscribe_channel("conn-2", "ch-1");
 
         let mut app = build_app(state);
         let (status, body) = get_json(&mut app, "/ch-1").await;
@@ -101,9 +99,9 @@ mod tests {
     #[tokio::test]
     async fn test_get_presence_multi_channel_user() {
         let state = make_state();
-        state
-            .ws_pool
-            .register("user-a", "conn-1", &["ch-1".into(), "ch-2".into()]);
+        state.ws_pool.register("user-a", "conn-1");
+        state.ws_pool.subscribe_channel("conn-1", "ch-1");
+        state.ws_pool.subscribe_channel("conn-1", "ch-2");
 
         let mut app = build_app(state);
 

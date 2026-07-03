@@ -216,9 +216,10 @@ async fn channel_lifecycle_integration_flow() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let messages = body["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 2);
-    assert_eq!(messages[0]["payload"]["text"], "Hello from integration test!");
-    assert_eq!(messages[1]["payload"]["text"], "Member reply!");
+    // 3 messages expected: join_request (from join-request flow) + 2 text messages
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[1]["payload"]["text"], "Hello from integration test!");
+    assert_eq!(messages[2]["payload"]["text"], "Member reply!");
     assert!(body["next_cursor"].as_i64().unwrap() >= 2);
     assert!(!body["has_more"].as_bool().unwrap());
 

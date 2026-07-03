@@ -86,4 +86,10 @@ pub enum ClientEvent {
     TypingStop {
         channel_id: String,
     },
+    Subscribe {
+        channel_id: String,
+    },
+    Unsubscribe {
+        channel_id: String,
+    },
 }
