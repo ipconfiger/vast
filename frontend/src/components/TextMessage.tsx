@@ -29,12 +29,19 @@ function RawContentPreview({ url }: { url: string }) {
   const [error, setError] = useState(false)
 
   useEffect(() => {
+    const rawUrl = toRawUrl(url)
     setLoading(true)
     setError(false)
-    fetch(`/api/raw?url=${encodeURIComponent(toRawUrl(url))}`)
+
+    fetch(rawUrl)
       .then(r => { if (!r.ok) throw new Error(); return r.text() })
       .then(t => { setContent(t.slice(0, 50000)); setLoading(false) })
-      .catch(() => { setError(true); setLoading(false) })
+      .catch(() => {
+        fetch(`/api/raw?url=${encodeURIComponent(rawUrl)}`)
+          .then(r => { if (!r.ok) throw new Error(); return r.text() })
+          .then(t => { setContent(t.slice(0, 50000)); setLoading(false) })
+          .catch(() => { setError(true); setLoading(false) })
+      })
   }, [url])
 
   if (loading) return (
