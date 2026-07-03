@@ -280,6 +280,39 @@ function useWsEventSync(manager: WebSocketManager): void {
           }
         }
       }),
+      manager.subscribe('join_request', (data) => {
+        const ev = data as { channel_id: string; user_id: string; username?: string }
+        if (!ev || typeof ev.channel_id !== 'string') return
+        const container = document.querySelector('.toast-container')
+        if (container) {
+          const el = document.createElement('div')
+          el.className = 'bg-indigo-600 text-white px-4 py-2 rounded-lg shadow-lg text-sm cursor-pointer hover:bg-indigo-500'
+          el.textContent = `@${ev.username || 'Someone'} requested to join a channel`
+          el.onclick = () => { window.history.pushState(null, '', '/channels/' + ev.channel_id); window.location.reload() }
+          container.appendChild(el)
+          setTimeout(() => el.remove(), 5000)
+        }
+      }),
+      manager.subscribe('member_added', (data) => {
+        const ev = data as { channel_id: string; user_id: string; username?: string }
+        if (!ev || typeof ev.channel_id !== 'string' || typeof ev.user_id !== 'string') return
+        const myId = useAuthStore.getState().user?.id
+        if (ev.user_id === myId) {
+          import('../App').then(({ queryClient }) => {
+            queryClient.refetchQueries({ queryKey: ['channels'] })
+            queryClient.refetchQueries({ queryKey: ['discover-channels'] })
+          }).catch(() => {})
+          const container = document.querySelector('.toast-container')
+          if (container) {
+            const el = document.createElement('div')
+            el.className = 'bg-emerald-600 text-white px-4 py-2 rounded-lg shadow-lg text-sm cursor-pointer hover:bg-emerald-500'
+            el.textContent = 'You have been added to a new channel!'
+            el.onclick = () => { window.history.pushState(null, '', '/channels/' + ev.channel_id); window.location.reload() }
+            container.appendChild(el)
+            setTimeout(() => el.remove(), 8000)
+          }
+        }
+      }),
       manager.subscribe('member_removed', (data) => {
         const ev = data as { channel_id: string; user_id: string }
         if (!ev || typeof ev.channel_id !== 'string' || typeof ev.user_id !== 'string') return

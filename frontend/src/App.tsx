@@ -13,7 +13,7 @@ import { ToastContainer } from './components/ToastContainer'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useWebSocket } from './hooks/useWebSocket'
 
-const queryClient = new QueryClient({
+export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       retry: 1,

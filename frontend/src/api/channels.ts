@@ -29,7 +29,7 @@ export function useCreateChannel() {
       apiClient<Channel>('/channels', { method: 'POST', body: JSON.stringify(data) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['channels'] })
-      queryClient.invalidateQueries({ queryKey: ['discover-channels'] })
+      queryClient.refetchQueries({ queryKey: ['discover-channels'] })
     },
   })
 }
@@ -68,7 +68,7 @@ export function useJoinChannel() {
     mutationFn: (channelId: string) =>
       apiClient('/channels/' + channelId + '/join-request', { method: 'POST' }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['discover-channels'] })
+      queryClient.refetchQueries({ queryKey: ['discover-channels'] })
     },
   })
 }
