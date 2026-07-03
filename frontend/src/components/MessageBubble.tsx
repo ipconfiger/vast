@@ -1,9 +1,7 @@
 import type { Message } from '../types'
-import { useState, useEffect } from 'react'
 import { FileText, Download, Check, X, UserPlus, Loader2 } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../api/client'
-import { useAuthStore } from '../stores/authStore'
 import { useAuthImage } from '../hooks/useAuthImage'
 import { TextMessage } from './TextMessage'
 import { CodeMessage } from './CodeMessage'
@@ -30,20 +28,8 @@ function FileMessage({
   const name = payload?.original_name || 'Unknown file'
   const url = payload?.url || '#'
   const isImage = payload?.mime_type?.startsWith('image/')
-  const token = useAuthStore((s) => s.token)
-  const [imgSrc, setImgSrc] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (!isImage || !url || !token || url === '#') return
-    let cancelled = false
-    fetch(url, { headers: { Authorization: `Bearer ${token}` } })
-      .then((r) => r.blob())
-      .then((blob) => {
-        if (!cancelled) setImgSrc(URL.createObjectURL(blob))
-      })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [url, token, isImage])
+  // blob URL + URL.revokeObjectURL on unmount are owned by useAuthImage
+  const imgSrc = useAuthImage(isImage && url !== '#' ? url : null)
 
   if (isImage) {
     return (

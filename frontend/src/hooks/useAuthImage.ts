@@ -8,14 +8,19 @@ export function useAuthImage(url?: string | null): string | null {
     if (!url) { setSrc(null); return }
     const token = useAuthStore.getState().token
     if (!token) { setSrc(null); return }
-    let cancelled = false
-    fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+    const controller = new AbortController()
+    let objectUrl: string | null = null
+    fetch(url, { signal: controller.signal, headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.blob())
       .then(blob => {
-        if (!cancelled) setSrc(URL.createObjectURL(blob))
+        objectUrl = URL.createObjectURL(blob)
+        setSrc(objectUrl)
       })
-      .catch(() => { if (!cancelled) setSrc(null) })
-    return () => { cancelled = true }
+      .catch(() => { setSrc(null) })
+    return () => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+      controller.abort()
+    }
   }, [url])
 
   return src

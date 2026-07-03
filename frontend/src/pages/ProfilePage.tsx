@@ -43,8 +43,9 @@ const [avatarSrc, setAvatarSrc] = useState<string | null>(null)
     if (!user?.avatar_url) { setAvatarSrc(null); return }
     const token = useAuthStore.getState().token
     if (!token) return
+    const controller = new AbortController()
     let objectUrl: string | null = null
-    fetch(user.avatar_url, { headers: { Authorization: `Bearer ${token}` } })
+    fetch(user.avatar_url, { signal: controller.signal, headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.blob())
       .then(blob => {
         objectUrl = URL.createObjectURL(blob)
@@ -53,6 +54,7 @@ const [avatarSrc, setAvatarSrc] = useState<string | null>(null)
       .catch(() => {})
     return () => {
       if (objectUrl) URL.revokeObjectURL(objectUrl)
+      controller.abort()
     }
   }, [user?.avatar_url])
 
