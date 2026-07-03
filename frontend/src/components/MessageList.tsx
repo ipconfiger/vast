@@ -37,9 +37,8 @@ export function MessageList({ channelId }: MessageListProps) {
 
   const virtualItems = virtualizer.getVirtualItems()
 
-  const scrollToBottom = () => {
-    const el = parentRef.current
-    if (el) el.scrollTop = el.scrollHeight
+  const scrollToBottom = (smooth = false) => {
+    bottomRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'end' })
   }
 
   useEffect(() => {
@@ -70,7 +69,7 @@ export function MessageList({ channelId }: MessageListProps) {
   useEffect(() => {
     if (messages.length === 0) return
     const timer = setTimeout(() => {
-      scrollToBottom()
+      scrollToBottom(true)
     }, 100)
     return () => clearTimeout(timer)
   }, [channelId])
