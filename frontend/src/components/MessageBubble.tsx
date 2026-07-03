@@ -38,10 +38,10 @@ function FileMessage({
           <img
             src={imgSrc}
             alt={name}
-            className="max-w-md max-h-96 rounded-lg border border-zinc-700"
+            className="inline-block max-w-md max-h-96 rounded-lg border border-zinc-700"
           />
         ) : (
-          <div className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800/50 p-3 max-w-sm">
+          <div className="inline-flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800/50 p-3 max-w-sm">
             <Loader2 className="h-5 w-5 animate-spin text-zinc-400" />
             <span className="text-sm text-zinc-400">Loading...</span>
           </div>
@@ -51,7 +51,7 @@ function FileMessage({
   }
 
   return (
-    <div className="file-message flex items-center gap-3 rounded-lg border border-zinc-700 bg-zinc-800/50 p-3 max-w-sm">
+    <div className="file-message inline-flex items-center gap-3 rounded-lg border border-zinc-700 bg-zinc-800/50 p-3 max-w-sm">
       <FileText className="h-8 w-8 text-zinc-400 flex-shrink-0" />
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium text-zinc-200 truncate">{name}</p>
