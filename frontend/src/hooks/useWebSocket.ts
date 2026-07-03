@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { createElement, useEffect, useState } from 'react'
 import { useAuthStore } from '../stores/authStore'
 import { usePresenceStore } from '../stores/presenceStore'
 import { useReactionStore } from '../stores/reactionStore'
 import { refreshAccessToken } from '../api/client'
 import { queryClient } from '../queryClient'
+import { toast, useToastStore } from '../stores/toastStore'
 import type { Reaction } from '../types'
 
 // Build WebSocket URL from the current page origin so it works in any
@@ -265,35 +266,24 @@ function useWsEventSync(manager: WebSocketManager): void {
         if (!ev || typeof ev.user_id !== 'string') return
         usePresenceStore.getState().removeOnline(ev.user_id)
       }),
-      manager.subscribe('member_added', (data) => {
-        const ev = data as { channel_id: string; user_id: string; username?: string }
-        if (!ev || typeof ev.channel_id !== 'string' || typeof ev.user_id !== 'string') return
-        const myId = useAuthStore.getState().user?.id
-        if (ev.user_id === myId) {
-          const container = document.querySelector('.toast-container')
-          if (container) {
-            const toast = document.createElement('div')
-            toast.className = 'bg-emerald-600 text-white px-4 py-2 rounded-lg shadow-lg text-sm cursor-pointer hover:bg-emerald-500'
-            toast.textContent = 'You have been added to a new channel!'
-            toast.onclick = () => { window.history.pushState(null, '', '/channels/' + ev.channel_id); window.location.reload() }
-            container.appendChild(toast)
-            setTimeout(() => toast.remove(), 8000)
-          }
-        }
-      }),
       manager.subscribe('join_request', (data) => {
         const ev = data as { channel_id: string; user_id: string; username?: string }
         if (!ev || typeof ev.channel_id !== 'string') return
         queryClient.invalidateQueries({ queryKey: ['messages', ev.channel_id] })
-        const container = document.querySelector('.toast-container')
-        if (container) {
-          const el = document.createElement('div')
-          el.className = 'bg-indigo-600 text-white px-4 py-2 rounded-lg shadow-lg text-sm cursor-pointer hover:bg-indigo-500'
-          el.textContent = `@${ev.username || 'Someone'} requested to join a channel`
-          el.onclick = () => { window.history.pushState(null, '', '/channels/' + ev.channel_id); window.location.reload() }
-          container.appendChild(el)
-          setTimeout(() => el.remove(), 5000)
-        }
+        useToastStore.getState().addToast({
+          type: 'info',
+          message: `@${ev.username || 'Someone'} requested to join a channel`,
+          action: createElement(
+            'button',
+            {
+              onClick: () => {
+                window.history.pushState(null, '', '/channels/' + ev.channel_id)
+                window.location.reload()
+              },
+            },
+            'Open',
+          ),
+        })
       }),
       manager.subscribe('member_added', (data) => {
         const ev = data as { channel_id: string; user_id: string; username?: string }
@@ -302,19 +292,11 @@ function useWsEventSync(manager: WebSocketManager): void {
         if (ev.user_id === myId) {
           queryClient.refetchQueries({ queryKey: ['channels'] })
           queryClient.refetchQueries({ queryKey: ['discover-channels'] })
+          toast.info('You have been added to a new channel!')
           setTimeout(() => {
             window.history.pushState(null, '', `/channels/${ev.channel_id}`)
             window.location.reload()
           }, 1500)
-          const container = document.querySelector('.toast-container')
-          if (container) {
-            const el = document.createElement('div')
-            el.className = 'bg-emerald-600 text-white px-4 py-2 rounded-lg shadow-lg text-sm cursor-pointer hover:bg-emerald-500'
-            el.textContent = 'You have been added to a new channel!'
-            el.onclick = () => { window.history.pushState(null, '', '/channels/' + ev.channel_id); window.location.reload() }
-            container.appendChild(el)
-            setTimeout(() => el.remove(), 8000)
-          }
         }
       }),
       manager.subscribe('member_removed', (data) => {
@@ -325,15 +307,8 @@ function useWsEventSync(manager: WebSocketManager): void {
           if (typeof window !== 'undefined') {
             window.history.replaceState(null, '', '/channels')
           }
-          const container = document.querySelector('.toast-container')
-          if (container) {
-            const toast = document.createElement('div')
-            toast.className = 'bg-red-600 text-white px-4 py-2 rounded-lg shadow-lg text-sm'
-            toast.textContent = 'You have been removed from the channel.'
-            container.appendChild(toast)
-            setTimeout(() => toast.remove(), 5000)
-            window.location.reload()
-          }
+          toast.error('You have been removed from the channel.')
+          setTimeout(() => window.location.reload(), 1500)
         }
       }),
       manager.subscribe('channel_archived', async (data) => {
