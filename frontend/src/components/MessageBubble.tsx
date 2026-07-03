@@ -228,7 +228,9 @@ export function MessageBubble({
         <div className={`mt-0.5 text-sm leading-relaxed ${isOwn ? 'text-right' : 'text-left'}`}>
           {renderContent()}
         </div>
-        <ReactionBar messageId={message.id || message.msg_id} />
+        <div className={isOwn ? 'flex justify-end' : ''}>
+          <ReactionBar messageId={message.id || message.msg_id} />
+        </div>
       </div>
     </div>
   )
