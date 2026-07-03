@@ -84,6 +84,14 @@ function FileMessage({
   )
 }
 
+function CommandResult({ text }: { text?: string }) {
+  return (
+    <div className="rounded-lg border border-indigo-500/20 bg-indigo-500/5 px-3 py-2">
+      <pre className="text-xs text-indigo-300 whitespace-pre-wrap font-mono leading-relaxed">{text || ''}</pre>
+    </div>
+  )
+}
+
 function JoinRequestMessage({
   payload,
   channelId,
@@ -183,6 +191,10 @@ export function MessageBubble({
         if (message.payload?._join_request) {
           if (isOwn) return null
           return <JoinRequestMessage payload={message.payload} channelId={channelId} isOwn={isOwn} />
+        }
+        if (message.payload?._command_result) {
+          if (message.payload?._owner_only && !isOwn) return null
+          return <CommandResult text={message.payload.text} />
         }
         return <TextMessage text={typeof message.payload === 'string' ? message.payload : message.payload?.text ?? ''} />
       case 'file':

@@ -162,6 +162,79 @@ pub async fn send_message(
     .await?
     .ok_or_else(|| AppError::Forbidden("You are not a member of this channel".to_string()))?;
 
+    // ── Slash command handling ──────────────────────────────────────
+    if body.payload.get("_command").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let cmd = body.payload.get("command").and_then(|v| v.as_str()).unwrap_or("");
+        let args = body.payload.get("args").and_then(|v| v.as_str()).unwrap_or("");
+        let role = _membership.0;
+
+        let result = match cmd {
+            "quit" => {
+                let is_dm: (bool,) = sqlx::query_as("SELECT is_direct FROM channels WHERE id = ?")
+                    .bind(&channel_id).fetch_one(&state.pool).await?;
+                if is_dm.0 {
+                    Err(AppError::Forbidden("Cannot delete DM channels".into()))
+                } else if role != "owner" {
+                    Err(AppError::Forbidden("Only the channel owner can delete this channel".into()))
+                } else {
+                    sqlx::query("UPDATE channels SET is_archived = 1 WHERE id = ?")
+                        .bind(&channel_id).execute(&state.pool).await?;
+                    state.ws_pool.notify_channel(&channel_id, ServerEvent::ChannelArchived { channel_id: channel_id.clone() });
+                    Ok(serde_json::json!({"_command_result": true, "text": "Channel has been archived."}))
+                }
+            }
+            "list" => {
+                if role != "owner" && role != "admin" {
+                    Err(AppError::Forbidden("Only channel owner/admin can list members".into()))
+                } else {
+                    let members: Vec<(String, String)> = sqlx::query_as(
+                        "SELECT u.username, cm.role FROM channel_members cm JOIN users u ON cm.user_id = u.id WHERE cm.channel_id = ? ORDER BY cm.role, u.username",
+                    ).bind(&channel_id).fetch_all(&state.pool).await?;
+                    let list: Vec<String> = members.iter().map(|(n, r)| format!("@{} [{}]", n, r)).collect();
+                    Ok(serde_json::json!({"_command_result": true, "_owner_only": true, "text": list.join("\n")}))
+                }
+            }
+            "kick" => {
+                if role != "owner" && role != "admin" {
+                    Err(AppError::Forbidden("Only channel owner/admin can kick members".into()))
+                } else if args.trim().is_empty() {
+                    Err(AppError::BadRequest("Usage: /kick <username>".into()))
+                } else {
+                    let target_row: Option<(String, String)> = sqlx::query_as(
+                        "SELECT u.id, COALESCE(cm.role, '') FROM users u LEFT JOIN channel_members cm ON cm.user_id = u.id AND cm.channel_id = ? WHERE u.username = ?"
+                    ).bind(&channel_id).bind(args.trim()).fetch_optional(&state.pool).await?;
+                    match target_row {
+                        None => Err(AppError::NotFound("User not found".into())),
+                        Some((tid, ref trole)) if trole == "owner" => Err(AppError::Forbidden("Cannot kick the channel owner".into())),
+                        Some((tid, _)) if tid == user_id => Err(AppError::BadRequest("You cannot kick yourself".into())),
+                        Some((_, ref trole)) if trole.is_empty() => Err(AppError::NotFound("User is not a member of this channel".into())),
+                        Some((tid, _)) => {
+                            sqlx::query("DELETE FROM channel_members WHERE channel_id = ? AND user_id = ?")
+                                .bind(&channel_id).bind(&tid).execute(&state.pool).await?;
+                            state.ws_pool.notify_channel(&channel_id, ServerEvent::MemberRemoved { channel_id: channel_id.clone(), user_id: tid.clone() });
+                            Ok(serde_json::json!({"_command_result": true, "text": format!("Kicked @{}.", args.trim())}))
+                        }
+                    }
+                }
+            }
+            _ => Err(AppError::BadRequest(format!("Unknown command: /{}. Try /quit, /list, or /kick <username>", cmd)))
+        };
+
+        let payload = result?;
+        let payload_str = serde_json::to_string(&payload).unwrap_or_default();
+        let msg_id = Uuid::new_v4().to_string();
+        let inserted: MessageRow = sqlx::query_as::<_, MessageRow>(
+            "INSERT INTO messages (msg_id, channel_id, sender_id, msg_type, payload) VALUES (?, ?, ?, 'text', ?) RETURNING id, msg_id, channel_id, sender_id, msg_type, payload, thread_parent_id, deleted_at, edited_at, created_at",
+        )
+        .bind(&msg_id).bind(&channel_id).bind(&user_id).bind(&payload_str)
+        .fetch_one(&state.pool).await?;
+        let mut resp = MessageResponse::from(inserted);
+        let username = sqlx::query_scalar::<_, String>("SELECT username FROM users WHERE id = ?")
+            .bind(&user_id).fetch_one(&state.pool).await.unwrap_or_default();
+        resp.sender_name = username;
+        return Ok((axum::http::StatusCode::CREATED, Json(resp)));
+    }
+
     db::check_disk_space(&state.config.data_dir)
         .map_err(|e| AppError::Internal(format!("Disk space check failed: {e}")))?;
 

@@ -4,6 +4,12 @@ import { useSendMessage } from '../api/channels'
 import { useUploadFile } from '../api/files'
 import { CodeSnippetInput } from './CodeSnippetInput'
 
+const COMMANDS = [
+  { cmd: 'quit', desc: 'Delete channel (owner)', args: false },
+  { cmd: 'list', desc: 'List members (owner/admin)', args: false },
+  { cmd: 'kick', desc: 'Kick a member (owner/admin)', args: true, argHint: '<username>' },
+]
+
 interface MessageInputProps {
   channelId: string
 }
@@ -27,7 +33,16 @@ export function MessageInput({ channelId }: MessageInputProps) {
     const trimmed = text.trim()
     if (!trimmed || sendMessage.isPending) return
 
-    sendMessage.mutate({ msg_type: 'text', payload: { text: trimmed } })
+    if (trimmed.startsWith('/')) {
+      const parts = trimmed.slice(1).split(/\s+/)
+      const cmd = parts[0]
+      const args = parts.slice(1).join(' ')
+      const cmdDef = COMMANDS.find(c => c.cmd === cmd)
+      if (cmdDef?.args && !args) return
+      sendMessage.mutate({ msg_type: 'text', payload: { _command: true, command: cmd, args } })
+    } else {
+      sendMessage.mutate({ msg_type: 'text', payload: { text: trimmed } })
+    }
     setText('')
 
     if (textareaRef.current) {
@@ -45,6 +60,10 @@ export function MessageInput({ channelId }: MessageInputProps) {
   const handleCodeSend = (payload: { language: string; code: string; filename?: string }) => {
     sendMessage.mutate({ msg_type: 'code', payload })
   }
+
+  const showCommands = text.startsWith('/')
+  const cmdFilter = text.startsWith('/') ? text.slice(1).split(/\s+/)[0].toLowerCase() : ''
+  const filteredCommands = showCommands ? COMMANDS.filter(c => c.cmd.startsWith(cmdFilter)) : []
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -87,7 +106,7 @@ export function MessageInput({ channelId }: MessageInputProps) {
         aria-label="Attach file"
       />
       <div className="message-input border-t border-zinc-800 bg-zinc-900/80 px-4 py-3">
-        <div className="flex items-end gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 focus-within:border-zinc-500 transition-colors">
+        <div className="flex items-end gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 focus-within:border-zinc-500 transition-colors relative">
           <button
             onClick={() => setShowCodeInput(true)}
             className="flex-shrink-0 rounded-md p-1.5 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 transition-colors"
@@ -107,6 +126,24 @@ export function MessageInput({ channelId }: MessageInputProps) {
               <Paperclip className="h-4 w-4" />
             )}
           </button>
+          {showCommands && filteredCommands.length > 0 && (
+            <div className="absolute left-0 bottom-full mb-1 z-50 rounded-lg border border-zinc-700 bg-zinc-800 shadow-xl py-1 min-w-[200px]">
+              {filteredCommands.map(c => (
+                <button
+                  key={c.cmd}
+                  className="flex items-center gap-2 w-full px-3 py-1.5 text-left text-sm hover:bg-zinc-700 text-zinc-300"
+                  onClick={() => {
+                    setText(c.args ? `/${c.cmd} ` : `/${c.cmd}`)
+                    textareaRef.current?.focus()
+                  }}
+                >
+                  <span className="text-indigo-400 font-mono text-xs">/{c.cmd}</span>
+                  {c.args && <span className="text-zinc-500 text-xs">{c.argHint}</span>}
+                  <span className="ml-auto text-xs text-zinc-500">{c.desc}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <textarea
             ref={textareaRef}
             value={text}
