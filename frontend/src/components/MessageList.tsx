@@ -43,19 +43,19 @@ export function MessageList({ channelId }: MessageListProps) {
 
     if (newCount > prevCount) {
       const lastMessage = messages[newCount - 1]
-      if (lastMessage && lastMessage.sender_id === user?.id) {
+      const isOwn = lastMessage && lastMessage.sender_id === user?.id
+      const isInitial = prevCount === 0
+
+      if (isOwn || isInitial) {
         virtualizer.scrollToIndex(newCount - 1, { align: 'end' })
-      } else if (prevCount > 0) {
+      } else {
         const scrollEl = parentRef.current
         if (scrollEl) {
-          const isNearBottom =
-            scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 200
+          const isNearBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 200
           if (isNearBottom) {
             virtualizer.scrollToIndex(newCount - 1, { align: 'end' })
           }
         }
-      } else {
-        virtualizer.scrollToIndex(newCount - 1, { align: 'end' })
       }
     }
 
@@ -63,10 +63,12 @@ export function MessageList({ channelId }: MessageListProps) {
   }, [messages.length, virtualizer, user?.id])
 
   useEffect(() => {
-    if (messages.length > 0 && prevMessageCountRef.current === 0) {
+    if (messages.length === 0) return
+    const timer = setTimeout(() => {
       virtualizer.scrollToIndex(messages.length - 1, { align: 'end' })
-    }
-  }, [virtualizer, messages.length])
+    }, 100)
+    return () => clearTimeout(timer)
+  }, [channelId])
 
   if (isLoading) {
     return <MessageListSkeleton />
