@@ -283,6 +283,9 @@ function useWsEventSync(manager: WebSocketManager): void {
       manager.subscribe('join_request', (data) => {
         const ev = data as { channel_id: string; user_id: string; username?: string }
         if (!ev || typeof ev.channel_id !== 'string') return
+        import('../App').then(({ queryClient }) => {
+          queryClient.invalidateQueries({ queryKey: ['messages', ev.channel_id] })
+        }).catch(() => {})
         const container = document.querySelector('.toast-container')
         if (container) {
           const el = document.createElement('div')
