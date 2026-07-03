@@ -126,6 +126,11 @@ pub fn api_routes() -> Router<Arc<AppState>> {
         )
         .route("/trains/{train_id}/join", post(api::trains::join_train))
         .route(
+            "/votes/{vote_id}",
+            get(api::votes::get_vote),
+        )
+        .route("/votes/{vote_id}/vote", post(api::votes::cast_vote))
+        .route(
             "/files/upload",
             post(api::files::upload_file)
                 .layer(RequestBodyLimitLayer::new(api::files::MAX_UPLOAD_SIZE)),

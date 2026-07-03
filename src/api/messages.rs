@@ -139,7 +139,7 @@ pub async fn send_message(
     auth: AuthenticatedUser,
     State(state): State<Arc<AppState>>,
     Path(channel_id): Path<String>,
-    Json(body): Json<SendMessageRequest>,
+    Json(mut body): Json<SendMessageRequest>,
 ) -> Result<(axum::http::StatusCode, Json<MessageResponse>), AppError> {
     let user_id = auth.0;
 
@@ -165,6 +165,67 @@ pub async fn send_message(
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| AppError::Forbidden("You are not a member of this channel".to_string()))?;
+
+    // ── _vote_request: create vote record, rewrite payload, fall through ──
+    if body.payload.get("_vote_request").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let title = body
+            .payload
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or("");
+        let opts_in = body.payload.get("options").and_then(|v| v.as_array());
+
+        if title.is_empty() {
+            return Err(AppError::BadRequest(
+                "Usage: vote requires a non-empty title".to_string(),
+            ));
+        }
+        let opts_arr = opts_in.ok_or_else(|| {
+            AppError::BadRequest("Vote requires an options array".to_string())
+        })?;
+        if opts_arr.is_empty() {
+            return Err(AppError::BadRequest(
+                "Vote requires at least one option".to_string(),
+            ));
+        }
+
+        let vote_id = Uuid::new_v4().to_string();
+        let vote_options: Vec<serde_json::Value> = opts_arr
+            .iter()
+            .map(|opt| {
+                let text = opt.as_str().unwrap_or("");
+                serde_json::json!({
+                    "id": Uuid::new_v4().to_string(),
+                    "text": text,
+                    "voter_ids": [],
+                })
+            })
+            .collect();
+        let options_json = serde_json::to_string(&vote_options).map_err(|e| {
+            AppError::Internal(format!("Failed to serialize vote options: {e}"))
+        })?;
+
+        sqlx::query(
+            "INSERT INTO votes (id, channel_id, creator_id, title, options) \
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&vote_id)
+        .bind(&channel_id)
+        .bind(&user_id)
+        .bind(title)
+        .bind(&options_json)
+        .execute(&state.pool)
+        .await?;
+
+        // Rewrite payload — the normal message flow below will INSERT
+        // the row and broadcast NewMsg with this card payload.
+        body.payload = serde_json::json!({
+            "_vote": true,
+            "vote_id": vote_id,
+            "title": title,
+        });
+    }
 
     // ── Slash command handling ──────────────────────────────────────
     if body.payload.get("_command").and_then(|v| v.as_bool()).unwrap_or(false) {

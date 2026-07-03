@@ -3,12 +3,14 @@ import { Send, Loader2, Code2, Paperclip } from 'lucide-react'
 import { useSendMessage } from '../api/channels'
 import { useUploadFile } from '../api/files'
 import { CodeSnippetInput } from './CodeSnippetInput'
+import { VoteBuilderModal } from './VoteBuilderModal'
 
 const COMMANDS = [
   { cmd: 'quit', desc: 'Delete channel (owner)', args: false },
   { cmd: 'list', desc: 'List members (owner/admin)', args: false },
   { cmd: 'kick', desc: 'Kick a member (owner/admin)', args: true, argHint: '<username>' },
   { cmd: 'train', desc: '发起接龙', args: true, argHint: '<标题>' },
+  { cmd: 'vote', desc: '发起投票', args: true, argHint: '<标题>' },
 ]
 
 interface MessageInputProps {
@@ -18,6 +20,8 @@ interface MessageInputProps {
 export function MessageInput({ channelId }: MessageInputProps) {
   const [text, setText] = useState('')
   const [showCodeInput, setShowCodeInput] = useState(false)
+  const [voteModalOpen, setVoteModalOpen] = useState(false)
+  const [voteInitialTitle, setVoteInitialTitle] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const sendMessage = useSendMessage(channelId)
@@ -40,6 +44,17 @@ export function MessageInput({ channelId }: MessageInputProps) {
       const args = parts.slice(1).join(' ')
       const cmdDef = COMMANDS.find(c => c.cmd === cmd)
       if (cmdDef?.args && !args) return
+
+      if (cmd === 'vote') {
+        setVoteInitialTitle(args)
+        setVoteModalOpen(true)
+        setText('')
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto'
+        }
+        return
+      }
+
       sendMessage.mutate({ msg_type: 'text', payload: { _command: true, command: cmd, args } })
     } else {
       sendMessage.mutate({ msg_type: 'text', payload: { text: trimmed } })
@@ -60,6 +75,13 @@ export function MessageInput({ channelId }: MessageInputProps) {
 
   const handleCodeSend = (payload: { language: string; code: string; filename?: string }) => {
     sendMessage.mutate({ msg_type: 'code', payload })
+  }
+
+  const handleVoteConfirm = (title: string, options: string[]) => {
+    sendMessage.mutate({
+      msg_type: 'text',
+      payload: { _vote_request: true, title, options },
+    })
   }
 
   const showCommands = text.startsWith('/')
@@ -99,6 +121,12 @@ export function MessageInput({ channelId }: MessageInputProps) {
           onClose={() => setShowCodeInput(false)}
         />
       )}
+      <VoteBuilderModal
+        isOpen={voteModalOpen}
+        onClose={() => setVoteModalOpen(false)}
+        onConfirm={handleVoteConfirm}
+        initialTitle={voteInitialTitle}
+      />
       <input
         type="file"
         ref={fileInputRef}

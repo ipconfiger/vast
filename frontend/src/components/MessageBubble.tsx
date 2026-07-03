@@ -8,6 +8,7 @@ import { CodeMessage } from './CodeMessage'
 import { ReactionPicker } from './ReactionPicker'
 import { ReactionBar } from './ReactionBar'
 import { TrainMessage } from './TrainMessage'
+import { VoteMessage } from './VoteMessage'
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return bytes + ' B'
@@ -179,6 +180,15 @@ export function MessageBubble({
       return (
         <TrainMessage
           trainId={message.payload.train_id}
+          title={message.payload.title}
+          channelId={message.channel_id}
+        />
+      )
+    }
+    if (message.payload?._vote) {
+      return (
+        <VoteMessage
+          voteId={message.payload.vote_id}
           title={message.payload.title}
           channelId={message.channel_id}
         />

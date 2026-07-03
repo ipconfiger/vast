@@ -31,6 +31,12 @@ export function useCursorSync(): void {
       queryClient.invalidateQueries({ queryKey: ['train', payload.train_id] })
     })
 
+    const unsubVote = manager.subscribe('vote_updated', (data: unknown) => {
+      const payload = data as { vote_id?: string } | null
+      if (!payload || typeof payload.vote_id !== 'string') return
+      queryClient.invalidateQueries({ queryKey: ['vote', payload.vote_id] })
+    })
+
     const unsubReconnect = manager.onReconnect(() => {
       if (currentChannelId) {
         manager.subscribeChannel(currentChannelId)
@@ -42,6 +48,7 @@ export function useCursorSync(): void {
       manager.unsubscribeChannel(currentChannelId)
       unsubMsg()
       unsubTrain()
+      unsubVote()
       unsubReconnect()
     }
   }, [currentChannelId, manager, queryClient])

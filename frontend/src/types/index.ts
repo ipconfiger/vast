@@ -101,3 +101,22 @@ export interface Train {
   replies: TrainReply[]
   created_at: number
 }
+
+// Vote JSON keys are camelCase (backend VoteResponse uses
+// #[serde(rename_all = "camelCase")], unlike Train). voter_ids is
+// never serialized to clients — only count + myVote.
+export interface VoteOption {
+  id: string
+  text: string
+  count: number
+}
+
+export interface Vote {
+  id: string
+  channelId: string
+  creatorId: string
+  title: string
+  options: VoteOption[]
+  myVote: string | null
+  createdAt: number
+}
