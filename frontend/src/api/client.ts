@@ -59,10 +59,13 @@ export async function apiClient<T>(
     token = newToken
   }
 
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...(options.headers as Record<string, string> | undefined),
+  // Only set Content-Type: application/json for non-FormData bodies
+  // FormData requires the browser to set the multipart boundary automatically
+  const headers: Record<string, string> = {}
+  if (!(options.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json'
   }
+  Object.assign(headers, options.headers as Record<string, string> | undefined)
 
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
