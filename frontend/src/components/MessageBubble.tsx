@@ -4,6 +4,7 @@ import { FileText, Download, Check, X, UserPlus, Loader2 } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../api/client'
 import { useAuthStore } from '../stores/authStore'
+import { useAuthImage } from '../hooks/useAuthImage'
 import { TextMessage } from './TextMessage'
 import { CodeMessage } from './CodeMessage'
 import { ReactionPicker } from './ReactionPicker'
@@ -185,6 +186,7 @@ export function MessageBubble({
   timestamp,
   channelId,
 }: MessageBubbleProps) {
+  const senderAvatarSrc = useAuthImage(senderAvatar)
   const renderContent = () => {
     switch (message.msg_type) {
       case 'text':
@@ -210,9 +212,9 @@ export function MessageBubble({
     <div className={`message-bubble group flex gap-3 px-4 py-2 hover:bg-zinc-800/30 ${isOwn ? 'flex-row-reverse' : ''}`}>
       {!isOwn && (
         <div className="flex-shrink-0 pt-0.5">
-          {senderAvatar ? (
+          {senderAvatarSrc ? (
             <img
-              src={senderAvatar}
+              src={senderAvatarSrc}
               alt={senderName}
               className="h-9 w-9 rounded-md object-cover"
             />

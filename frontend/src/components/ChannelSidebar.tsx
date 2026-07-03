@@ -7,6 +7,7 @@ import { useChannelStore } from '../stores/channelStore'
 import { usePresenceStore } from '../stores/presenceStore'
 import { useUserStore } from '../stores/userStore'
 import { useAuthStore } from '../stores/authStore'
+import { useAuthImage } from '../hooks/useAuthImage'
 import { ChannelListSkeleton } from './Skeletons'
 import { NoChannelsEmpty } from './EmptyState'
 import { CreateChannelDialog } from './CreateChannelDialog'
@@ -95,6 +96,7 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
   const getName = useUserStore((s) => s.getName)
   const currentUserId = useAuthStore((s) => s.user?.id)
   const user = useAuthStore((s) => s.user)
+  const avatarSrc = useAuthImage(user?.avatar_url)
 
   useEffect(() => {
     if (channelData) setChannels(channelData)
@@ -223,9 +225,13 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
 
         <div className="mt-auto border-t border-zinc-800 pt-3 px-3 pb-3">
           <button onClick={() => { navigate('/profile'); onClose?.() }} className="flex items-center gap-2 w-full rounded-md px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors">
-            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-zinc-700 text-xs font-semibold text-zinc-300">
-              {user?.username?.charAt(0).toUpperCase() || '?'}
-            </div>
+            {avatarSrc ? (
+              <img src={avatarSrc} className="h-7 w-7 rounded-full object-cover" />
+            ) : (
+              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-zinc-700 text-xs font-semibold text-zinc-300">
+                {user?.username?.charAt(0).toUpperCase() || '?'}
+              </div>
+            )}
             <span className="truncate">{user?.display_name || user?.username || 'Profile'}</span>
           </button>
         </div>
