@@ -1,4 +1,5 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { queryClient } from './queryClient'
 import { createBrowserRouter, RouterProvider, Outlet } from 'react-router'
 import { ChannelListPage } from './pages/ChannelListPage'
 import { RequestsPage } from './pages/RequestsPage'
@@ -12,16 +13,6 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { ToastContainer } from './components/ToastContainer'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useWebSocket } from './hooks/useWebSocket'
-
-export const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      retry: 1,
-      staleTime: 30_000,
-      refetchOnWindowFocus: false,
-    },
-  },
-})
 
 function AppLayout() {
   useKeyboardShortcuts()

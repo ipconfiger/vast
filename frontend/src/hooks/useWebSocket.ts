@@ -3,6 +3,7 @@ import { useAuthStore } from '../stores/authStore'
 import { usePresenceStore } from '../stores/presenceStore'
 import { useReactionStore } from '../stores/reactionStore'
 import { refreshAccessToken } from '../api/client'
+import { queryClient } from '../queryClient'
 import type { Reaction } from '../types'
 
 // Build WebSocket URL from the current page origin so it works in any
@@ -283,9 +284,7 @@ function useWsEventSync(manager: WebSocketManager): void {
       manager.subscribe('join_request', (data) => {
         const ev = data as { channel_id: string; user_id: string; username?: string }
         if (!ev || typeof ev.channel_id !== 'string') return
-        import('../App').then(({ queryClient }) => {
-          queryClient.invalidateQueries({ queryKey: ['messages', ev.channel_id] })
-        }).catch(() => {})
+        queryClient.invalidateQueries({ queryKey: ['messages', ev.channel_id] })
         const container = document.querySelector('.toast-container')
         if (container) {
           const el = document.createElement('div')
@@ -301,10 +300,12 @@ function useWsEventSync(manager: WebSocketManager): void {
         if (!ev || typeof ev.channel_id !== 'string' || typeof ev.user_id !== 'string') return
         const myId = useAuthStore.getState().user?.id
         if (ev.user_id === myId) {
-          import('../App').then(({ queryClient }) => {
-            queryClient.refetchQueries({ queryKey: ['channels'] })
-            queryClient.refetchQueries({ queryKey: ['discover-channels'] })
-          }).catch(() => {})
+          queryClient.refetchQueries({ queryKey: ['channels'] })
+          queryClient.refetchQueries({ queryKey: ['discover-channels'] })
+          setTimeout(() => {
+            window.history.pushState(null, '', `/channels/${ev.channel_id}`)
+            window.location.reload()
+          }, 1500)
           const container = document.querySelector('.toast-container')
           if (container) {
             const el = document.createElement('div')
