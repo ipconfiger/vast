@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { apiClient } from '../api/client'
 import { useAuthStore } from '../stores/authStore'
@@ -12,6 +12,7 @@ export default function ProfilePage() {
   const [displayName, setDisplayName] = useState('')
   const [fetched, setFetched] = useState(false)
   const [saved, setSaved] = useState(false)
+const [uploading, setUploading] = useState(false)
 
   const saveMutation = useMutation({
     mutationFn: (display_name: string) =>
@@ -26,9 +27,18 @@ export default function ProfilePage() {
     },
   })
 
+  useEffect(() => {
+    if (!fetched) {
+      apiClient<{ id: string; username: string; display_name: string; avatar_url: string }>('/auth/profile')
+        .then(d => {
+          setDisplayName(d.display_name)
+          if (user) setUser({ ...user, avatar_url: d.avatar_url })
+          setFetched(true)
+        })
+    }
+  }, [])
+
   if (!fetched) {
-    apiClient<{ id: string; username: string; display_name: string; avatar_url: string }>('/auth/profile')
-      .then(d => { setDisplayName(d.display_name); setFetched(true) })
     return <div className="min-h-screen bg-slate-950 flex items-center justify-center"><div className="animate-spin h-6 w-6 border-2 border-indigo-500 border-t-transparent rounded-full" /></div>
   }
 
@@ -49,12 +59,19 @@ export default function ProfilePage() {
                     {(user?.display_name || user?.username || '?').charAt(0).toUpperCase()}
                   </div>
                 )}
-                <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <Camera className="h-6 w-6 text-white" />
-                </div>
+                {uploading ? (
+                  <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/70">
+                    <div className="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full" />
+                  </div>
+                ) : (
+                  <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <Camera className="h-6 w-6 text-white" />
+                  </div>
+                )}
                 <input type="file" accept="image/*" className="hidden" onChange={async (e) => {
                   const file = e.target.files?.[0]
                   if (!file) return
+                  setUploading(true)
                   const token = useAuthStore.getState().token
                   const fd = new FormData()
                   fd.append('file', file)
@@ -66,6 +83,8 @@ export default function ProfilePage() {
                       if (user) setUser({ ...user, avatar_url: data.url })
                     }
                   } catch(e) {}
+                  finally { setUploading(false) }
+                  e.target.value = ''
                 }} />
               </label>
             </div>
