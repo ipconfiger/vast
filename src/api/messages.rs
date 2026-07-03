@@ -59,6 +59,7 @@ pub struct MessageResponse {
     pub channel_id: String,
     pub sender_id: String,
     pub sender_name: String,
+    pub sender_display_name: String,
     pub msg_type: String,
     pub payload: serde_json::Value,
     pub thread_parent_id: Option<i64>,
@@ -88,6 +89,7 @@ impl From<MessageRow> for MessageResponse {
             channel_id: row.channel_id,
             sender_id: row.sender_id.clone(),
             sender_name: row.sender_id,
+            sender_display_name: String::new(),
             msg_type: row.msg_type,
             payload,
             thread_parent_id: row.thread_parent_id,
@@ -229,9 +231,15 @@ pub async fn send_message(
         .bind(&msg_id).bind(&channel_id).bind(&user_id).bind(&payload_str)
         .fetch_one(&state.pool).await?;
         let mut resp = MessageResponse::from(inserted);
-        let username = sqlx::query_scalar::<_, String>("SELECT username FROM users WHERE id = ?")
-            .bind(&user_id).fetch_one(&state.pool).await.unwrap_or_default();
+        let (username, display_name) = sqlx::query_as::<_, (String, String)>(
+            "SELECT username, display_name FROM users WHERE id = ?",
+        )
+        .bind(&user_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or_default();
         resp.sender_name = username;
+        resp.sender_display_name = display_name;
         return Ok((axum::http::StatusCode::CREATED, Json(resp)));
     }
 
@@ -332,19 +340,19 @@ pub async fn get_messages(
     let has_more = (rows.len() as i64) > limit;
 
     let sender_ids: Vec<String> = rows.iter().map(|r| r.sender_id.clone()).collect();
-    let usernames: HashMap<String, String> = if sender_ids.is_empty() {
+    let usernames: HashMap<String, (String, String)> = if sender_ids.is_empty() {
         HashMap::new()
     } else {
         let placeholders: Vec<String> = sender_ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
         let query = format!(
-            "SELECT id, username FROM users WHERE id IN ({})",
+            "SELECT id, username, display_name FROM users WHERE id IN ({})",
             placeholders.join(",")
         );
-        let mut q = sqlx::query_as::<_, (String, String)>(&query);
+        let mut q = sqlx::query_as::<_, (String, String, String)>(&query);
         for id in &sender_ids {
             q = q.bind(id);
         }
-        q.fetch_all(&state.pool).await.unwrap_or_default().into_iter().collect()
+        q.fetch_all(&state.pool).await.unwrap_or_default().into_iter().map(|(id, u, d)| (id, (u, d))).collect()
     };
 
     let messages: Vec<MessageResponse> = rows
@@ -352,8 +360,9 @@ pub async fn get_messages(
         .take(limit as usize)
         .map(|r| {
             let mut msg = MessageResponse::from(r);
-            if let Some(name) = usernames.get(&msg.sender_id).cloned() {
-                msg.sender_name = name;
+            if let Some((name, dname)) = usernames.get(&msg.sender_id) {
+                msg.sender_name = name.clone();
+                msg.sender_display_name = dname.clone();
             }
             msg
         })

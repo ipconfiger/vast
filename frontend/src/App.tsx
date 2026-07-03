@@ -5,6 +5,7 @@ import { ChannelListPage } from './pages/ChannelListPage'
 import { RequestsPage } from './pages/RequestsPage'
 import { SearchPage } from './pages/SearchPage'
 import { DirectMessagePage } from './pages/DirectMessagePage'
+import ProfilePage from './pages/ProfilePage'
 import { ThreadView } from './pages/ThreadView'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
@@ -71,6 +72,10 @@ const router = createBrowserRouter([
           {
             path: '/dm/:userId',
             element: <DirectMessagePage />,
+          },
+          {
+            path: '/profile',
+            element: <ProfilePage />,
           },
           {
             path: '/search',

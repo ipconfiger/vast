@@ -105,7 +105,7 @@ export function MessageList({ channelId }: MessageListProps) {
                 <MessageBubble
                   message={message}
                   isOwn={message.sender_id === user?.id}
-                  senderName={message.sender_id === user?.id ? 'You' : (message as any).sender_name || message.sender_id.slice(0, 8)}
+                  senderName={message.sender_id === user?.id ? 'You' : message.sender_display_name || message.sender_name || message.sender_id.slice(0, 8)}
                   timestamp={dayjs(message.created_at).format('h:mm A')}
                   channelId={channelId}
                 />

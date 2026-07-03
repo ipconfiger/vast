@@ -15,6 +15,8 @@ export interface Channel {
   created_by: string
   created_at: string
   member_count?: number
+  owner_id?: string
+  role?: string
 }
 
 export interface ChannelMember {
@@ -31,6 +33,7 @@ export interface Message {
   channel_id: string
   sender_id: string
   sender_name?: string
+  sender_display_name?: string
   msg_type: string
   payload: any
   thread_parent_id?: string | null

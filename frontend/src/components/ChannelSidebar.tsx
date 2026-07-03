@@ -93,6 +93,8 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
   const createChannel = useCreateChannel()
   const onlineUsers = usePresenceStore((s) => s.onlineUsers)
   const getName = useUserStore((s) => s.getName)
+  const currentUserId = useAuthStore((s) => s.user?.id)
+  const user = useAuthStore((s) => s.user)
 
   useEffect(() => {
     if (channelData) setChannels(channelData)
@@ -163,13 +165,14 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
           <NoChannelsEmpty onBrowse={() => setIsDiscoverOpen(true)} />
         ) : (
           <div className="flex flex-col gap-0.5">
-            {channels.map((channel) => (
-              <ChannelItem
-                key={channel.id}
-                channel={channel}
-                isActive={channel.id === channelId}
-                onClick={() => handleChannelClick(channel)}
-              />
+            {channels.filter(c => c.owner_id === currentUserId).map(c => (
+              <ChannelItem key={c.id} channel={c} isActive={c.id === channelId} onClick={() => handleChannelClick(c)} />
+            ))}
+            {channels.filter(c => c.owner_id !== currentUserId).length > 0 && (
+              <h3 className="px-3 pt-3 pb-1 text-xs font-semibold text-zinc-500 uppercase tracking-wider">Joined</h3>
+            )}
+            {channels.filter(c => c.owner_id !== currentUserId).map(c => (
+              <ChannelItem key={c.id} channel={c} isActive={c.id === channelId} onClick={() => handleChannelClick(c)} />
             ))}
           </div>
         )}
@@ -217,6 +220,15 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
             </div>
           </div>
         )}
+
+        <div className="mt-auto border-t border-zinc-800 pt-3 px-3 pb-3">
+          <button onClick={() => { navigate('/profile'); onClose?.() }} className="flex items-center gap-2 w-full rounded-md px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors">
+            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-zinc-700 text-xs font-semibold text-zinc-300">
+              {user?.username?.charAt(0).toUpperCase() || '?'}
+            </div>
+            <span className="truncate">{user?.display_name || user?.username || 'Profile'}</span>
+          </button>
+        </div>
       </div>
 
       <CreateChannelDialog

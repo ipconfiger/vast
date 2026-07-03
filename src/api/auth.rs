@@ -1,7 +1,7 @@
 use axum::{
     extract::State,
     http::StatusCode,
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -265,6 +265,68 @@ pub async fn logout(
     no_content()
 }
 
+#[derive(Debug, Serialize)]
+pub struct ProfileResponse {
+    pub id: String,
+    pub username: String,
+    pub display_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateProfileRequest {
+    pub display_name: Option<String>,
+}
+
+/// GET /api/auth/profile
+pub async fn get_profile(
+    auth: AuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<ProfileResponse>, AppError> {
+    let (username, display_name) = sqlx::query_as::<_, (String, String)>(
+        "SELECT username, display_name FROM users WHERE id = ?",
+    )
+    .bind(&auth.0)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(Json(ProfileResponse {
+        id: auth.0,
+        username,
+        display_name,
+    }))
+}
+
+/// PATCH /api/auth/profile
+pub async fn update_profile(
+    auth: AuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<UpdateProfileRequest>,
+) -> Result<Json<ProfileResponse>, AppError> {
+    if let Some(ref name) = body.display_name {
+        let trimmed = name.trim();
+        if trimmed.len() > 32 {
+            return Err(AppError::BadRequest(
+                "Display name must be 32 characters or fewer".into(),
+            ));
+        }
+        sqlx::query("UPDATE users SET display_name = ? WHERE id = ?")
+            .bind(trimmed)
+            .bind(&auth.0)
+            .execute(&state.pool)
+            .await?;
+    }
+    let (username, display_name) = sqlx::query_as::<_, (String, String)>(
+        "SELECT username, display_name FROM users WHERE id = ?",
+    )
+    .bind(&auth.0)
+    .fetch_one(&state.pool)
+    .await?;
+    Ok(Json(ProfileResponse {
+        id: auth.0,
+        username,
+        display_name,
+    }))
+}
+
 /// Build the /auth sub-router
 pub fn auth_routes() -> Router<Arc<AppState>> {
     Router::new()
@@ -272,6 +334,7 @@ pub fn auth_routes() -> Router<Arc<AppState>> {
         .route("/login", post(login))
         .route("/refresh", post(refresh))
         .route("/logout", post(logout))
+        .route("/profile", get(get_profile).patch(update_profile))
 }
 
 // ===========================================================================
