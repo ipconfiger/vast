@@ -264,6 +264,35 @@ function useWsEventSync(manager: WebSocketManager): void {
         if (!ev || typeof ev.user_id !== 'string') return
         usePresenceStore.getState().removeOnline(ev.user_id)
       }),
+      manager.subscribe('member_removed', (data) => {
+        const ev = data as { channel_id: string; user_id: string }
+        if (!ev || typeof ev.channel_id !== 'string' || typeof ev.user_id !== 'string') return
+        const myId = useAuthStore.getState().user?.id
+        if (ev.user_id === myId) {
+          if (typeof window !== 'undefined') {
+            window.history.replaceState(null, '', '/channels')
+          }
+          const container = document.querySelector('.toast-container')
+          if (container) {
+            const toast = document.createElement('div')
+            toast.className = 'bg-red-600 text-white px-4 py-2 rounded-lg shadow-lg text-sm'
+            toast.textContent = 'You have been removed from the channel.'
+            container.appendChild(toast)
+            setTimeout(() => toast.remove(), 5000)
+            window.location.reload()
+          }
+        }
+      }),
+      manager.subscribe('channel_archived', async (data) => {
+        const ev = data as { channel_id: string }
+        if (!ev || typeof ev.channel_id !== 'string') return
+        const store = (await import('../stores/channelStore')).useChannelStore.getState()
+        if (store.currentChannelId === ev.channel_id) {
+          store.setCurrentChannel(null)
+          window.history.replaceState(null, '', '/channels')
+          window.location.reload()
+        }
+      }),
     ]
     return () => {
       unsubs.forEach((unsub) => unsub())
