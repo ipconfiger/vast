@@ -270,11 +270,13 @@ pub struct ProfileResponse {
     pub id: String,
     pub username: String,
     pub display_name: String,
+    pub avatar_url: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateProfileRequest {
     pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
 }
 
 /// GET /api/auth/profile
@@ -282,8 +284,8 @@ pub async fn get_profile(
     auth: AuthenticatedUser,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ProfileResponse>, AppError> {
-    let (username, display_name) = sqlx::query_as::<_, (String, String)>(
-        "SELECT username, display_name FROM users WHERE id = ?",
+    let (username, display_name, avatar_url) = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT username, display_name, avatar_url FROM users WHERE id = ?",
     )
     .bind(&auth.0)
     .fetch_one(&state.pool)
@@ -292,6 +294,7 @@ pub async fn get_profile(
         id: auth.0,
         username,
         display_name,
+        avatar_url,
     }))
 }
 
@@ -314,8 +317,12 @@ pub async fn update_profile(
             .execute(&state.pool)
             .await?;
     }
-    let (username, display_name) = sqlx::query_as::<_, (String, String)>(
-        "SELECT username, display_name FROM users WHERE id = ?",
+    if let Some(ref url) = body.avatar_url {
+        sqlx::query("UPDATE users SET avatar_url = ? WHERE id = ?")
+            .bind(url.trim()).bind(&auth.0).execute(&state.pool).await?;
+    }
+    let (username, display_name, avatar_url) = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT username, display_name, avatar_url FROM users WHERE id = ?",
     )
     .bind(&auth.0)
     .fetch_one(&state.pool)
@@ -324,6 +331,7 @@ pub async fn update_profile(
         id: auth.0,
         username,
         display_name,
+        avatar_url,
     }))
 }
 

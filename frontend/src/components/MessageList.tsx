@@ -105,6 +105,7 @@ export function MessageList({ channelId }: MessageListProps) {
                 <MessageBubble
                   message={message}
                   isOwn={message.sender_id === user?.id}
+                  senderAvatar={message.sender_id === user?.id ? user?.avatar_url : undefined}
                   senderName={
                     message.sender_id === user?.id
                       ? 'You'
