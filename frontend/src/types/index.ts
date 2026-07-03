@@ -34,6 +34,7 @@ export interface Message {
   sender_id: string
   sender_name?: string
   sender_display_name?: string
+  sender_avatar_url?: string
   msg_type: string
   payload: any
   thread_parent_id?: string | null
