@@ -59,6 +59,8 @@ export function useDiscoverChannels() {
     queryKey: ['discover-channels'],
     queryFn: () =>
       apiClient<{ channels: DiscoverChannel[] }>('/channels/discover'),
+    staleTime: 0,
+    refetchOnMount: true,
   })
 }
 
