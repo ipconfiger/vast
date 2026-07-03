@@ -438,10 +438,44 @@ pub async fn get_thread(
     .await?;
 
     let has_more = (rows.len() as i64) > limit;
+
+    let sender_ids: Vec<String> = rows.iter().map(|r| r.sender_id.clone()).collect();
+    let senders: HashMap<String, (String, String, String)> = if sender_ids.is_empty() {
+        HashMap::new()
+    } else {
+        let placeholders: Vec<String> = sender_ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect();
+        let query = format!(
+            "SELECT id, username, display_name, avatar_url FROM users WHERE id IN ({})",
+            placeholders.join(",")
+        );
+        let mut q = sqlx::query_as::<_, (String, String, String, String)>(&query);
+        for id in &sender_ids {
+            q = q.bind(id);
+        }
+        q.fetch_all(&state.pool)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, u, d, a)| (id, (u, d, a)))
+            .collect()
+    };
+
     let messages: Vec<MessageResponse> = rows
         .into_iter()
         .take(limit as usize)
-        .map(MessageResponse::from)
+        .map(|r| {
+            let mut msg = MessageResponse::from(r);
+            if let Some((name, dname, avatar)) = senders.get(&msg.sender_id) {
+                msg.sender_name = name.clone();
+                msg.sender_display_name = dname.clone();
+                msg.sender_avatar_url = avatar.clone();
+            }
+            msg
+        })
         .collect();
 
     let next_cursor = messages
@@ -499,6 +533,34 @@ pub async fn delete_message(
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
+/// Hosts the raw-proxy is allowed to fetch from. SSRF defense: any host not
+/// in this exact-match list is rejected with 403 before any network call.
+/// Decision (plan Q1:A): strict hardcoded — NOT env-configurable.
+const ALLOWED_RAW_HOSTS: &[&str] = &[
+    "raw.githubusercontent.com",
+    "gist.githubusercontent.com",
+    "gitlab.com",
+];
+
+/// Parse and validate a raw-proxy URL.
+///
+/// - Parses with `reqwest::Url::parse` so userinfo tricks (`evil@host`) and
+///   subdomain spoofs (`host.evil.com`) are normalized before the host check.
+/// - Rejects non-http/https schemes.
+/// - Rejects any host not in `ALLOWED_RAW_HOSTS` (exact equality only).
+fn parse_raw_url(raw: &str) -> Result<reqwest::Url, AppError> {
+    let url = reqwest::Url::parse(raw).map_err(|_| AppError::BadRequest("Invalid url".into()))?;
+    let scheme = url.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err(AppError::BadRequest("Only http/https URLs allowed".into()));
+    }
+    let host = url.host_str().unwrap_or("");
+    if !ALLOWED_RAW_HOSTS.contains(&host) {
+        return Err(AppError::Forbidden("host not allowed".into()));
+    }
+    Ok(url)
+}
+
 /// GET /api/raw?url=<encoded_url>
 /// Proxy for fetching raw file content to bypass CORS restrictions
 pub async fn raw_proxy(
@@ -506,18 +568,15 @@ pub async fn raw_proxy(
 ) -> Result<axum::response::Response, AppError> {
     let url = params.get("url").ok_or_else(|| AppError::BadRequest("Missing url parameter".into()))?;
     let url = urlencoding::decode(url).map_err(|_| AppError::BadRequest("Invalid url encoding".into()))?;
-
-    // Only allow HTTP/HTTPS URLs
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err(AppError::BadRequest("Only http/https URLs allowed".into()));
-    }
+    let parsed = parse_raw_url(url.as_ref())?;
 
     let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| AppError::Internal(format!("Failed to create HTTP client: {e}")))?;
 
-    let response = client.get(url.as_ref())
+    let response = client.get(parsed)
         .header("User-Agent", "VAST-IM-RawProxy/1.0")
         .send()
         .await
@@ -552,6 +611,7 @@ mod tests {
     use axum::{
         body::Body,
         http::{header, Method, Request, StatusCode},
+        routing::get,
         Router,
     };
     use serde_json::{json, Value};
@@ -1020,5 +1080,193 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── raw_proxy SSRF allowlist ────────────────────────────────────
+
+    fn raw_router() -> Router {
+        Router::new().route("/raw", get(raw_proxy))
+    }
+
+    async fn raw_status(url: &str) -> StatusCode {
+        let app = raw_router();
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(format!("/raw?url={}", urlencoding::encode(url)))
+            .body(Body::empty())
+            .unwrap();
+        app.oneshot(req).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn test_raw_proxy_rejects_internal_metadata_ip() {
+        // 169.254.169.254 is the AWS/Azure/GCP metadata endpoint — must never be proxied.
+        let status = raw_status("http://169.254.169.254/latest/meta-data/iam/").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_raw_proxy_rejects_localhost() {
+        let status = raw_status("http://localhost:6379/").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_raw_proxy_rejects_subdomain_spoof() {
+        // Host is "raw.githubusercontent.com.evil.com" — exact match catches the spoof.
+        let status = raw_status("https://raw.githubusercontent.com.evil.com/x.rs").await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_parse_raw_url_allows_gist() {
+        // Regression guard: gist.githubusercontent.com is in the allowlist.
+        let url = parse_raw_url("https://gist.githubusercontent.com/u/g/raw/f.py").unwrap();
+        assert_eq!(url.host_str(), Some("gist.githubusercontent.com"));
+    }
+
+    #[tokio::test]
+    async fn test_parse_raw_url_uses_host_str_not_userinfo() {
+        // Userinfo "evil@" must NOT influence the host check. reqwest::Url::parse
+        // puts "evil" in userinfo and host_str() returns the real host, so this
+        // URL is allowed by the host allowlist (the actual request goes to the
+        // github host, ignoring the userinfo).
+        let url = parse_raw_url("https://evil@raw.githubusercontent.com/x.rs").unwrap();
+        assert_eq!(url.host_str(), Some("raw.githubusercontent.com"));
+    }
+
+    // ── get_thread sender hydration ─────────────────────────────────
+
+    async fn insert_channel_member(pool: &sqlx::SqlitePool, channel_id: &str, user_id: &str, role: &str) {
+        sqlx::query("INSERT INTO channel_members (channel_id, user_id, role) VALUES (?, ?, ?)")
+            .bind(channel_id)
+            .bind(user_id)
+            .bind(role)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_thread_hydrates_sender_info() {
+        let (mut app, pool, owner_id, owner_token, _) = setup().await;
+        let channel_id = create_channel(&mut app, &owner_token).await;
+
+        let user2_id = Uuid::new_v4().to_string();
+        let pw = crate::auth::hash_password("pass").unwrap();
+        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)")
+            .bind(&user2_id)
+            .bind("alice")
+            .bind(&pw)
+            .execute(&pool)
+            .await
+            .unwrap();
+        // Populate the fields create_second_user skips — assertions depend on these.
+        sqlx::query("UPDATE users SET display_name = ?, avatar_url = ? WHERE id = ?")
+            .bind("Alice")
+            .bind("http://example.com/a.png")
+            .bind(&user2_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        insert_channel_member(&pool, &channel_id, &user2_id, "member").await;
+        let user2_token = crate::auth::create_token_pair(&user2_id, "test-secret")
+            .unwrap()
+            .access_token;
+
+        let parent = send_message(&mut app, &channel_id, &owner_token).await;
+        let parent_id = parent["id"].as_i64().unwrap();
+
+        let resp = request(
+            &mut app,
+            Method::POST,
+            &format!("/channels/{}/messages", channel_id),
+            Some(json!({
+                "msg_type": "text",
+                "payload": {"text": "hi from alice"},
+                "thread_parent_id": parent_id,
+            })),
+            &user2_token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let thread_resp = request(
+            &mut app,
+            Method::GET,
+            &format!("/channels/{}/messages/{}/thread", channel_id, parent_id),
+            None,
+            &owner_token,
+        )
+        .await;
+        assert_eq!(thread_resp.status(), StatusCode::OK);
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(thread_resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        let reply = &messages[0];
+        assert_eq!(reply["sender_id"], user2_id);
+        assert_eq!(reply["sender_name"], "alice");
+        assert_eq!(reply["sender_display_name"], "Alice");
+        assert_eq!(reply["sender_avatar_url"], "http://example.com/a.png");
+        let _ = owner_id;
+    }
+
+    #[tokio::test]
+    async fn test_get_thread_graceful_when_sender_missing() {
+        // Simulate a thread reply whose sender row no longer exists. With FK
+        // enforcement off on a single connection we can insert an orphan row,
+        // and the hydration must fall back gracefully (no panic).
+        let (mut app, pool, owner_id, owner_token, _) = setup().await;
+        let channel_id = create_channel(&mut app, &owner_token).await;
+
+        let parent = send_message(&mut app, &channel_id, &owner_token).await;
+        let parent_id = parent["id"].as_i64().unwrap();
+
+        let orphan_sender = "ghost-user-not-in-users-table";
+        let mut conn = pool.acquire().await.unwrap();
+        sqlx::query("PRAGMA foreign_keys=OFF")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO messages (msg_id, channel_id, sender_id, msg_type, payload, thread_parent_id) \
+             VALUES (?, ?, ?, 'text', '{}', ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&channel_id)
+        .bind(orphan_sender)
+        .bind(parent_id)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        drop(conn);
+
+        let resp = request(
+            &mut app,
+            Method::GET,
+            &format!("/channels/{}/messages/{}/thread", channel_id, parent_id),
+            None,
+            &owner_token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        // No user row → sender_name falls back to the raw sender_id, empty display/avatar.
+        assert_eq!(messages[0]["sender_name"], orphan_sender);
+        assert_eq!(messages[0]["sender_display_name"], "");
+        let _ = owner_id;
     }
 }
