@@ -13,6 +13,7 @@ export default function ProfilePage() {
   const [fetched, setFetched] = useState(false)
   const [saved, setSaved] = useState(false)
 const [uploading, setUploading] = useState(false)
+const [avatarSrc, setAvatarSrc] = useState<string | null>(null)
 
   const saveMutation = useMutation({
     mutationFn: (display_name: string) =>
@@ -38,6 +39,23 @@ const [uploading, setUploading] = useState(false)
     }
   }, [])
 
+  useEffect(() => {
+    if (!user?.avatar_url) { setAvatarSrc(null); return }
+    const token = useAuthStore.getState().token
+    if (!token) return
+    let objectUrl: string | null = null
+    fetch(user.avatar_url, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.blob())
+      .then(blob => {
+        objectUrl = URL.createObjectURL(blob)
+        setAvatarSrc(objectUrl)
+      })
+      .catch(() => {})
+    return () => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [user?.avatar_url])
+
   if (!fetched) {
     return <div className="min-h-screen bg-slate-950 flex items-center justify-center"><div className="animate-spin h-6 w-6 border-2 border-indigo-500 border-t-transparent rounded-full" /></div>
   }
@@ -52,8 +70,8 @@ const [uploading, setUploading] = useState(false)
           <h1 className="text-xl font-bold text-white mb-6">Profile</h1>
             <div className="flex justify-center mb-6">
               <label className="relative cursor-pointer group">
-                {user?.avatar_url ? (
-                  <img src={user.avatar_url} className="h-24 w-24 rounded-full object-cover border-2 border-zinc-700 group-hover:border-indigo-500 transition-colors" />
+                {avatarSrc ? (
+                  <img src={avatarSrc} className="h-24 w-24 rounded-full object-cover border-2 border-zinc-700 group-hover:border-indigo-500 transition-colors" />
                 ) : (
                   <div className="flex h-24 w-24 items-center justify-center rounded-full bg-zinc-700 text-3xl font-bold text-zinc-300 group-hover:ring-2 ring-indigo-500 transition-all">
                     {(user?.display_name || user?.username || '?').charAt(0).toUpperCase()}
