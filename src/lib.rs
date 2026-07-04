@@ -205,6 +205,7 @@ pub fn api_routes() -> Router<Arc<AppState>> {
         .nest("/channels", api::channel_members::routes())
         .nest("/dm", api::dm::dm_routes())
         .nest("/auth", api::auth::auth_routes())
+        .nest("/admin", api::admin::admin_routes())
 }
 
 /// Build the full application router (API + WS + frontend fallback)
