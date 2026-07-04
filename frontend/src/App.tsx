@@ -19,6 +19,9 @@ import AdminPublicRouteGuard from './components/admin/AdminPublicRouteGuard'
 import AdminLayout from './components/admin/AdminLayout'
 import AdminLoginPage from './pages/admin/AdminLoginPage'
 import AdminDashboardPage from './pages/admin/AdminDashboardPage'
+import AdminUsersPage from './pages/admin/AdminUsersPage'
+import AdminInviteCodesPage from './pages/admin/AdminInviteCodesPage'
+import AdminAuditLogsPage from './pages/admin/AdminAuditLogsPage'
 
 function AppLayout() {
   useKeyboardShortcuts()
@@ -118,27 +121,15 @@ const router = createBrowserRouter([
           },
           {
             path: 'users',
-            element: (
-              <div className="p-8 text-zinc-400">
-                User management — coming in T11
-              </div>
-            ),
+            element: <AdminUsersPage />,
           },
           {
             path: 'invite-codes',
-            element: (
-              <div className="p-8 text-zinc-400">
-                Invite codes — coming in T12
-              </div>
-            ),
+            element: <AdminInviteCodesPage />,
           },
           {
             path: 'audit-logs',
-            element: (
-              <div className="p-8 text-zinc-400">
-                Audit logs — coming in T13
-              </div>
-            ),
+            element: <AdminAuditLogsPage />,
           },
         ],
       },
