@@ -6,7 +6,7 @@
 
 use axum::{
     extract::{Path, Query, State},
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::auth::{self, admin::AdminAuthenticatedUser, TokenPair};
-use crate::error::{no_content, ok_response, AppError};
+use crate::error::{created_response, no_content, ok_response, AppError};
 use crate::AppState;
 
 // ---------------------------------------------------------------------------
@@ -89,6 +89,36 @@ pub struct AdminUserView {
     pub username: String,
     pub display_name: String,
     pub avatar_url: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListInviteCodesQuery {
+    pub page: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateInviteCodeRequest {
+    pub code: String,
+    pub max_uses: Option<i64>,
+    pub is_active: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateInviteCodeRequest {
+    pub max_uses: Option<i64>,
+    pub is_active: Option<bool>,
+    pub reset_use_count: Option<bool>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct InviteCodeView {
+    pub code: String,
+    pub created_by_user_id: Option<String>,
+    pub max_uses: i64,
+    pub use_count: i64,
+    pub is_active: bool,
     pub created_at: i64,
 }
 
@@ -465,6 +495,168 @@ pub async fn delete_user(
 }
 
 // ---------------------------------------------------------------------------
+// Invite-code handlers
+// ---------------------------------------------------------------------------
+
+/// GET /api/admin/invite-codes
+pub async fn list_invite_codes(
+    _admin: AdminAuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListInviteCodesQuery>,
+) -> Result<Json<Vec<InviteCodeView>>, AppError> {
+    let page = params.page.unwrap_or(1).max(1);
+    let limit = params.limit.unwrap_or(20).clamp(1, 100);
+    let offset = (page - 1) * limit;
+
+    let codes: Vec<InviteCodeView> = sqlx::query_as::<_, InviteCodeView>(
+        "SELECT code, created_by_user_id, max_uses, use_count, is_active, created_at \
+         FROM invite_codes ORDER BY created_at DESC, code LIMIT ? OFFSET ?",
+    )
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&state.pool)
+    .await?;
+
+    Ok(Json(codes))
+}
+
+/// POST /api/admin/invite-codes
+///
+/// Creates a new invite code. Duplicate codes trigger 409 via the
+/// `From<sqlx::Error>` UNIQUE-constraint mapping.
+pub async fn create_invite_code(
+    _admin: AdminAuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<CreateInviteCodeRequest>,
+) -> Result<(axum::http::StatusCode, Json<InviteCodeView>), AppError> {
+    let trimmed = body.code.trim();
+    if trimmed.is_empty() || trimmed.len() > 64 {
+        return Err(AppError::BadRequest(
+            "Code must be 1-64 characters".to_string(),
+        ));
+    }
+
+    let max_uses = body.max_uses.unwrap_or(100);
+    let is_active = body.is_active.unwrap_or(true);
+
+    sqlx::query(
+        "INSERT INTO invite_codes (code, max_uses, use_count, is_active) \
+         VALUES (?, ?, 0, ?)",
+    )
+    .bind(trimmed)
+    .bind(max_uses)
+    .bind(is_active)
+    .execute(&state.pool)
+    .await?;
+
+    let _ = audit(
+        &state.pool,
+        "invite.create",
+        Some("invite_code"),
+        Some(trimmed),
+        None,
+    )
+    .await;
+
+    let view = sqlx::query_as::<_, InviteCodeView>(
+        "SELECT code, created_by_user_id, max_uses, use_count, is_active, created_at \
+         FROM invite_codes WHERE code = ?",
+    )
+    .bind(trimmed)
+    .fetch_one(&state.pool)
+    .await?;
+
+    created_response(view)
+}
+
+/// PATCH /api/admin/invite-codes/{code}
+///
+/// Partial update: each provided field gets its own UPDATE. If the
+/// code does not exist the first UPDATE affects 0 rows → 404.
+pub async fn update_invite_code(
+    _admin: AdminAuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+    Path(code): Path<String>,
+    Json(body): Json<UpdateInviteCodeRequest>,
+) -> Result<Json<InviteCodeView>, AppError> {
+    let exists: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM invite_codes WHERE code = ?")
+            .bind(&code)
+            .fetch_optional(&state.pool)
+            .await?;
+    if exists.is_none() {
+        return Err(AppError::NotFound("Invite code not found".to_string()));
+    }
+
+    if let Some(max_uses) = body.max_uses {
+        sqlx::query("UPDATE invite_codes SET max_uses = ? WHERE code = ?")
+            .bind(max_uses)
+            .bind(&code)
+            .execute(&state.pool)
+            .await?;
+    }
+    if let Some(is_active) = body.is_active {
+        sqlx::query("UPDATE invite_codes SET is_active = ? WHERE code = ?")
+            .bind(is_active)
+            .bind(&code)
+            .execute(&state.pool)
+            .await?;
+    }
+    if body.reset_use_count == Some(true) {
+        sqlx::query("UPDATE invite_codes SET use_count = 0 WHERE code = ?")
+            .bind(&code)
+            .execute(&state.pool)
+            .await?;
+    }
+
+    let _ = audit(
+        &state.pool,
+        "invite.update",
+        Some("invite_code"),
+        Some(&code),
+        None,
+    )
+    .await;
+
+    let view = sqlx::query_as::<_, InviteCodeView>(
+        "SELECT code, created_by_user_id, max_uses, use_count, is_active, created_at \
+         FROM invite_codes WHERE code = ?",
+    )
+    .bind(&code)
+    .fetch_one(&state.pool)
+    .await?;
+
+    Ok(Json(view))
+}
+
+/// DELETE /api/admin/invite-codes/{code}
+pub async fn delete_invite_code(
+    _admin: AdminAuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+    Path(code): Path<String>,
+) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), AppError> {
+    let result = sqlx::query("DELETE FROM invite_codes WHERE code = ?")
+        .bind(&code)
+        .execute(&state.pool)
+        .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound("Invite code not found".to_string()));
+    }
+
+    let _ = audit(
+        &state.pool,
+        "invite.delete",
+        Some("invite_code"),
+        Some(&code),
+        None,
+    )
+    .await;
+
+    no_content()
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -485,6 +677,15 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
                     get(get_user).patch(update_user).delete(delete_user),
                 )
                 .route("/{id}/reset-password", post(reset_password)),
+        )
+        .nest(
+            "/invite-codes",
+            Router::new()
+                .route("/", get(list_invite_codes).post(create_invite_code))
+                .route(
+                    "/{code}",
+                    patch(update_invite_code).delete(delete_invite_code),
+                ),
         )
 }
 
@@ -1585,5 +1786,413 @@ mod tests {
         )
         .await;
         assert!(patch_body.get("password_hash").is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Invite-code helpers + tests
+    // -----------------------------------------------------------------------
+
+    async fn seed_invite_code(pool: &sqlx::SqlitePool, code: &str) {
+        sqlx::query(
+            "INSERT INTO invite_codes (code, max_uses, use_count, is_active) \
+             VALUES (?, 100, 0, 1)",
+        )
+        .bind(code)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn clear_invite_codes(pool: &sqlx::SqlitePool) {
+        sqlx::query("DELETE FROM invite_codes")
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    /// Given: the invite_codes table is empty.
+    /// When:  GET /admin/invite-codes as admin.
+    /// Then:  200 OK with an empty array.
+    #[tokio::test]
+    async fn test_list_invite_codes_empty() {
+        let pool = setup_pool().await;
+        clear_invite_codes(&pool).await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, body) =
+            get_with_token(&mut app, "/admin/invite-codes", &pair.access_token).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 0);
+    }
+
+    /// Given: three invite codes exist.
+    /// When:  GET /admin/invite-codes as admin.
+    /// Then:  200 OK returning all 3 ordered by created_at DESC.
+    #[tokio::test]
+    async fn test_list_invite_codes_with_data() {
+        let pool = setup_pool().await;
+        clear_invite_codes(&pool).await;
+        seed_invite_code(&pool, "AAA").await;
+        seed_invite_code(&pool, "BBB").await;
+        seed_invite_code(&pool, "CCC").await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, body) =
+            get_with_token(&mut app, "/admin/invite-codes", &pair.access_token).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 3);
+    }
+
+    /// Given: five invite codes exist.
+    /// When:  GET /admin/invite-codes?page=2&limit=2 as admin.
+    /// Then:  200 OK returning 2 items (page 2).
+    #[tokio::test]
+    async fn test_list_invite_codes_pagination() {
+        let pool = setup_pool().await;
+        clear_invite_codes(&pool).await;
+        for i in 0..5 {
+            seed_invite_code(&pool, &format!("CODE{i}")).await;
+        }
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, body) = get_with_token(
+            &mut app,
+            "/admin/invite-codes?page=2&limit=2",
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 2);
+    }
+
+    /// Given: no existing code "TEST001".
+    /// When:  POST /admin/invite-codes with {code:"TEST001", max_uses:50}.
+    /// Then:  201 Created; GET list confirms it exists with max_uses=50.
+    #[tokio::test]
+    async fn test_create_invite_code_success() {
+        let pool = setup_pool().await;
+        clear_invite_codes(&pool).await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, body) = post_json_with_token(
+            &mut app,
+            "/admin/invite-codes",
+            json!({"code": "TEST001", "max_uses": 50}),
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body["code"], "TEST001");
+        assert_eq!(body["max_uses"], 50);
+        assert_eq!(body["use_count"], 0);
+        assert_eq!(body["is_active"], true);
+    }
+
+    /// Given: code "DUP001" already exists.
+    /// When:  POST /admin/invite-codes with the same code.
+    /// Then:  409 Conflict.
+    #[tokio::test]
+    async fn test_create_invite_code_duplicate() {
+        let pool = setup_pool().await;
+        clear_invite_codes(&pool).await;
+        seed_invite_code(&pool, "DUP001").await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, body) = post_json_with_token(
+            &mut app,
+            "/admin/invite-codes",
+            json!({"code": "DUP001"}),
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"]["code"], "CONFLICT");
+    }
+
+    /// Given: code must be non-empty.
+    /// When:  POST /admin/invite-codes with {code:""}.
+    /// Then:  400 Bad Request.
+    #[tokio::test]
+    async fn test_create_invite_code_empty_code() {
+        let pool = setup_pool().await;
+        clear_invite_codes(&pool).await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, body) = post_json_with_token(
+            &mut app,
+            "/admin/invite-codes",
+            json!({"code": ""}),
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "BAD_REQUEST");
+    }
+
+    /// Given: max_uses and is_active are optional.
+    /// When:  POST /admin/invite-codes with only {code:"DEF001"}.
+    /// Then:  201 Created with max_uses=100, is_active=true, use_count=0.
+    #[tokio::test]
+    async fn test_create_invite_code_defaults() {
+        let pool = setup_pool().await;
+        clear_invite_codes(&pool).await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, body) = post_json_with_token(
+            &mut app,
+            "/admin/invite-codes",
+            json!({"code": "DEF001"}),
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body["max_uses"], 100);
+        assert_eq!(body["is_active"], true);
+        assert_eq!(body["use_count"], 0);
+    }
+
+    /// Given: an active invite code exists.
+    /// When:  PATCH /admin/invite-codes/{code} with is_active=false.
+    /// Then:  200 OK; DB confirms is_active=0 (register would reject it).
+    #[tokio::test]
+    async fn test_update_invite_code_toggle_active() {
+        let pool = setup_pool().await;
+        clear_invite_codes(&pool).await;
+        seed_invite_code(&pool, "TOGGLE").await;
+        let pool_clone = pool.clone();
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, body) = patch_json_with_token(
+            &mut app,
+            "/admin/invite-codes/TOGGLE",
+            json!({"is_active": false}),
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["is_active"], false);
+
+        let db_active: bool =
+            sqlx::query_scalar("SELECT is_active FROM invite_codes WHERE code = ?")
+                .bind("TOGGLE")
+                .fetch_one(&pool_clone)
+                .await
+                .unwrap();
+        assert!(!db_active);
+    }
+
+    /// Given: an invite code with use_count=5.
+    /// When:  PATCH with reset_use_count=true.
+    /// Then:  200 OK with use_count=0.
+    #[tokio::test]
+    async fn test_update_invite_code_reset_use_count() {
+        let pool = setup_pool().await;
+        clear_invite_codes(&pool).await;
+        seed_invite_code(&pool, "RESET").await;
+        sqlx::query("UPDATE invite_codes SET use_count = 5 WHERE code = 'RESET'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, body) = patch_json_with_token(
+            &mut app,
+            "/admin/invite-codes/RESET",
+            json!({"reset_use_count": true}),
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["use_count"], 0);
+    }
+
+    /// Given: an invite code exists.
+    /// When:  PATCH with max_uses=10.
+    /// Then:  200 OK with max_uses=10.
+    #[tokio::test]
+    async fn test_update_invite_code_max_uses() {
+        let pool = setup_pool().await;
+        clear_invite_codes(&pool).await;
+        seed_invite_code(&pool, "MAXUSE").await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, body) = patch_json_with_token(
+            &mut app,
+            "/admin/invite-codes/MAXUSE",
+            json!({"max_uses": 10}),
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["max_uses"], 10);
+    }
+
+    /// Given: no invite code "NOPE".
+    /// When:  PATCH /admin/invite-codes/NOPE.
+    /// Then:  404 Not Found.
+    #[tokio::test]
+    async fn test_update_invite_code_not_found() {
+        let pool = setup_pool().await;
+        clear_invite_codes(&pool).await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, _body) = patch_json_with_token(
+            &mut app,
+            "/admin/invite-codes/NOPE",
+            json!({"max_uses": 50}),
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// Given: an invite code exists.
+    /// When:  DELETE /admin/invite-codes/{code}.
+    /// Then:  204 No Content; GET list confirms it's gone.
+    #[tokio::test]
+    async fn test_delete_invite_code() {
+        let pool = setup_pool().await;
+        clear_invite_codes(&pool).await;
+        seed_invite_code(&pool, "DELME").await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, _body) = delete_with_token(
+            &mut app,
+            "/admin/invite-codes/DELME",
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let (status, body) =
+            get_with_token(&mut app, "/admin/invite-codes", &pair.access_token).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 0);
+    }
+
+    /// Given: no invite code "NOPE".
+    /// When:  DELETE /admin/invite-codes/NOPE.
+    /// Then:  404 Not Found.
+    #[tokio::test]
+    async fn test_delete_invite_code_not_found() {
+        let pool = setup_pool().await;
+        clear_invite_codes(&pool).await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, _body) = delete_with_token(
+            &mut app,
+            "/admin/invite-codes/NOPE",
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// Given: invite endpoints require admin authentication.
+    /// When:  GET without token, then GET with a user token.
+    /// Then:  Both 401 Unauthorized.
+    #[tokio::test]
+    async fn test_invite_endpoints_require_admin() {
+        let pool = setup_pool().await;
+        let app = build_app(make_state(pool.clone(), admin_enabled_config()));
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/invite-codes")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let user_pair =
+            crate::auth::create_token_pair("user-1", "test-secret", 0).unwrap();
+        let (status, _body) =
+            get_with_token(&mut app, "/admin/invite-codes", &user_pair.access_token).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    /// Given: create, update, and delete each write an audit row.
+    /// When:  Performing all three operations.
+    /// Then:  admin_audit_logs has 3 rows with matching action/target_id.
+    #[tokio::test]
+    async fn test_invite_code_audit_trail() {
+        let pool = setup_pool().await;
+        clear_invite_codes(&pool).await;
+        let pool_clone = pool.clone();
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let _ = post_json_with_token(
+            &mut app,
+            "/admin/invite-codes",
+            json!({"code": "AUDIT"}),
+            &pair.access_token,
+        )
+        .await;
+
+        let _ = patch_json_with_token(
+            &mut app,
+            "/admin/invite-codes/AUDIT",
+            json!({"max_uses": 5}),
+            &pair.access_token,
+        )
+        .await;
+
+        let _ = delete_with_token(
+            &mut app,
+            "/admin/invite-codes/AUDIT",
+            &pair.access_token,
+        )
+        .await;
+
+        let actions: Vec<String> =
+            sqlx::query_scalar("SELECT action FROM admin_audit_logs ORDER BY id")
+                .fetch_all(&pool_clone)
+                .await
+                .unwrap();
+        assert!(actions.contains(&"invite.create".to_string()));
+        assert!(actions.contains(&"invite.update".to_string()));
+        assert!(actions.contains(&"invite.delete".to_string()));
     }
 }
