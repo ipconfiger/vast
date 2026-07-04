@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useMessages } from '../api/channels'
 import { useMessageStore } from '../stores/messageStore'
@@ -7,6 +7,7 @@ import { MessageBubble } from './MessageBubble'
 import { MessageListSkeleton } from './Skeletons'
 import { NoMessagesEmpty } from './EmptyState'
 import dayjs from 'dayjs'
+import { getUserDisplayName } from '../utils/user'
 
 interface MessageListProps {
   channelId: string
@@ -14,8 +15,8 @@ interface MessageListProps {
 
 export function MessageList({ channelId }: MessageListProps) {
   const parentRef = useRef<HTMLDivElement>(null)
-  const bottomRef = useRef<HTMLDivElement>(null)
   const prevMessageCountRef = useRef(0)
+  const isAtBottomRef = useRef(true)
 
   const { data: messageData, isLoading } = useMessages(channelId)
   // Keep `?? []` OUTSIDE the selector: returning a fresh `[]` from inside
@@ -24,8 +25,13 @@ export function MessageList({ channelId }: MessageListProps) {
   const setMessages = useMessageStore((s) => s.setMessages)
   const user = useAuthStore((s) => s.user)
 
+  // Deviates from plan CHANGE 6: the unwrapped Message[] is already bound to
+  // `messageData` here (useMessages' queryFn returns data.messages), so the
+  // .data member does not exist on it. Intent (depend on data) is met.
   useEffect(() => {
-    if (messageData) setMessages(channelId, messageData)
+    if (messageData) {
+      setMessages(channelId, messageData)
+    }
   }, [messageData, channelId, setMessages])
 
   const virtualizer = useVirtualizer({
@@ -33,13 +39,19 @@ export function MessageList({ channelId }: MessageListProps) {
     getScrollElement: () => parentRef.current,
     estimateSize: () => 68,
     overscan: 5,
+    getItemKey: (index) => messages[index]?.id ?? messages[index]?.msg_id ?? index,
   })
 
   const virtualItems = virtualizer.getVirtualItems()
 
-  const scrollToBottom = (smooth = false) => {
-    bottomRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'end' })
-  }
+  const scrollToBottom = useCallback((smooth = false) => {
+    requestAnimationFrame(() => {
+      virtualizer.scrollToIndex(messages.length - 1, {
+        align: 'end',
+        behavior: smooth ? 'smooth' : 'auto',
+      })
+    })
+  }, [virtualizer, messages.length])
 
   useEffect(() => {
     const prevCount = prevMessageCountRef.current
@@ -50,29 +62,35 @@ export function MessageList({ channelId }: MessageListProps) {
       const isOwn = lastMessage && lastMessage.sender_id === user?.id
       const isInitial = prevCount === 0
 
-      if (isOwn || isInitial) {
+      if (isOwn || isInitial || isAtBottomRef.current) {
         scrollToBottom()
-      } else {
-        const scrollEl = parentRef.current
-        if (scrollEl) {
-          const isNearBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 200
-          if (isNearBottom) {
-            scrollToBottom()
-          }
-        }
       }
     }
 
     prevMessageCountRef.current = newCount
-  }, [messages.length, user?.id])
+  }, [messages.length, user?.id, scrollToBottom])
 
   useEffect(() => {
     if (messages.length === 0) return
+    isAtBottomRef.current = true
     const timer = setTimeout(() => {
       scrollToBottom(true)
     }, 100)
     return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channelId])
+
+  // Cannot use [] here: the loading early-return renders <MessageListSkeleton/>
+  // before parentRef is bound, so a mount-only effect would bail on null forever.
+  useEffect(() => {
+    const el = parentRef.current
+    if (!el) return
+    const onScroll = () => {
+      isAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [messages.length])
 
   if (isLoading) {
     return <MessageListSkeleton />
@@ -109,9 +127,7 @@ export function MessageList({ channelId }: MessageListProps) {
                   senderName={
                     message.sender_id === user?.id
                       ? 'You'
-                      : message.sender_display_name
-                        ? `${message.sender_display_name} (${message.sender_name || message.sender_id.slice(0, 8)})`
-                        : (message.sender_name || message.sender_id.slice(0, 8))
+                      : getUserDisplayName(message.sender_display_name, message.sender_name, message.sender_id)
                   }
                   timestamp={dayjs(message.created_at).format('h:mm A')}
                   channelId={channelId}
@@ -121,7 +137,6 @@ export function MessageList({ channelId }: MessageListProps) {
           })}
         </div>
       </div>
-      <div ref={bottomRef} />
     </div>
   )
 }
