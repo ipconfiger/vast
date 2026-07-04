@@ -30,7 +30,19 @@ impl FromRequestParts<Arc<AppState>> for AuthenticatedUser {
             Some(token) => {
                 let secret = &state.config.jwt_secret;
                 match super::validate_token(token, secret) {
-                    Ok(claims) => Ok(AuthenticatedUser(claims.sub)),
+                    Ok(claims) => {
+                        // Enforce token_epoch (forced logout) and reject
+                        // tokens whose sub is not a users row (deleted
+                        // user, admin principal). See verify_user_epoch.
+                        match super::verify_user_epoch(&state.pool, &claims.sub, claims.epoch).await {
+                            Ok(()) => Ok(AuthenticatedUser(claims.sub)),
+                            Err(_) => Err((
+                                StatusCode::UNAUTHORIZED,
+                                Json(json!({"error": {"code": "UNAUTHORIZED", "message": "Token has been superseded"}})),
+                            )
+                                .into_response()),
+                        }
+                    }
                     Err(_) => Err((
                         StatusCode::UNAUTHORIZED,
                         Json(json!({"error": {"code": "UNAUTHORIZED", "message": "Invalid or expired token"}})),

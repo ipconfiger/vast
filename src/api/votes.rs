@@ -306,7 +306,7 @@ mod tests {
         unsafe {
             std::env::set_var("JWT_SECRET", secret);
         }
-        let token = crate::auth::create_token_pair(&user_id, secret)
+        let token = crate::auth::create_token_pair(&user_id, secret, 0)
             .expect("Failed to create token")
             .access_token;
 
@@ -431,7 +431,7 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
-        let token = crate::auth::create_token_pair(&user_id, "test-secret")
+        let token = crate::auth::create_token_pair(&user_id, "test-secret", 0)
             .unwrap()
             .access_token;
         (user_id, token)
@@ -690,7 +690,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        let token2 = crate::auth::create_token_pair(&user2_id, "test-secret")
+        let token2 = crate::auth::create_token_pair(&user2_id, "test-secret", 0)
             .unwrap()
             .access_token;
 

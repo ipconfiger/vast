@@ -415,7 +415,7 @@ mod tests {
         let secret = "test-secret";
         // SAFETY: test-only; single-threaded, no concurrent readers
         unsafe { std::env::set_var("JWT_SECRET", secret) };
-        let token = crate::auth::create_token_pair(&user_id, secret)
+        let token = crate::auth::create_token_pair(&user_id, secret, 0)
             .expect("Failed to create token")
             .access_token;
 
@@ -633,7 +633,7 @@ mod tests {
             .expect("Failed to insert user2");
 
         let secret = "test-secret";
-        let token2 = crate::auth::create_token_pair(&user2_id, secret)
+        let token2 = crate::auth::create_token_pair(&user2_id, secret, 0)
             .unwrap()
             .access_token;
 
@@ -746,7 +746,7 @@ mod tests {
             .unwrap();
 
         let secret = "test-secret";
-        let token2 = crate::auth::create_token_pair(&user2_id, secret)
+        let token2 = crate::auth::create_token_pair(&user2_id, secret, 0)
             .unwrap()
             .access_token;
 
@@ -886,7 +886,7 @@ mod tests {
             .unwrap();
 
         let secret = "test-secret";
-        let token2 = crate::auth::create_token_pair(&user2_id, secret)
+        let token2 = crate::auth::create_token_pair(&user2_id, secret, 0)
             .unwrap()
             .access_token;
 
@@ -1077,7 +1077,7 @@ mod tests {
             .await
             .unwrap();
         let secret = "test-secret";
-        let token2 = crate::auth::create_token_pair(&user2_id, secret)
+        let token2 = crate::auth::create_token_pair(&user2_id, secret, 0)
             .unwrap()
             .access_token;
 
@@ -1133,7 +1133,7 @@ mod tests {
             .await
             .unwrap();
         let secret = "test-secret";
-        let token2 = crate::auth::create_token_pair(&user2_id, secret)
+        let token2 = crate::auth::create_token_pair(&user2_id, secret, 0)
             .unwrap()
             .access_token;
 

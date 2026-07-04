@@ -234,6 +234,22 @@ pub async fn ws_handler(
         }
     };
 
+    // Enforce token_epoch (forced logout) and reject tokens whose sub is
+    // not a users row (deleted user, admin principal).
+    if let Err(e) = auth::verify_user_epoch(&state.pool, &claims.sub, claims.epoch).await {
+        warn!(%e, "WebSocket connection rejected: epoch check failed");
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(json!({
+                "error": {
+                    "code": "UNAUTHORIZED",
+                    "message": "Token has been superseded"
+                }
+            })),
+        )
+            .into_response();
+    }
+
     let user_id = claims.sub;
     info!(user_id, "WebSocket upgrade requested");
 

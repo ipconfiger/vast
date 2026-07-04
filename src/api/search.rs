@@ -217,7 +217,7 @@ mod tests {
             .await
             .expect("Failed to insert user1");
 
-        let token1 = crate::auth::create_token_pair(&user1_id, secret)
+        let token1 = crate::auth::create_token_pair(&user1_id, secret, 0)
             .expect("Failed to create token")
             .access_token;
 
@@ -232,7 +232,7 @@ mod tests {
             .await
             .expect("Failed to insert user2");
 
-        let token2 = crate::auth::create_token_pair(&user2_id, secret)
+        let token2 = crate::auth::create_token_pair(&user2_id, secret, 0)
             .expect("Failed to create token")
             .access_token;
 

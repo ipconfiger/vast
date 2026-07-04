@@ -296,7 +296,7 @@ mod tests {
     }
 
     fn test_token() -> String {
-        crate::auth::create_token_pair("test-user", "test")
+        crate::auth::create_token_pair("test-user", "test", 0)
             .unwrap()
             .access_token
     }
@@ -313,13 +313,15 @@ mod tests {
             ..crate::AppConfig::test_default()
         };
 
-        // In-memory SQLite pool so AppState is happy (runs migrations).
+        // In-memory SQLite pool. max_connections(1) is required because
+        // plain `:memory:` gives each connection its own private database;
+        // with >1 connection the INSERT below would land on a fresh DB.
         let opts = sqlx::sqlite::SqliteConnectOptions::new()
             .filename(":memory:")
             .create_if_missing(true)
             .foreign_keys(true);
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(2)
+            .max_connections(1)
             .connect_with(opts)
             .await
             .unwrap();
@@ -327,6 +329,14 @@ mod tests {
             .run(&pool)
             .await
             .unwrap();
+        // Seed the test-user so the AuthenticatedUser middleware's epoch
+        // check (SELECT token_epoch FROM users WHERE id = ?) finds a row.
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash) VALUES ('test-user', 'test-user', 'x')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let ws_pool = Arc::new(crate::ws::ConnectionPool::new());
 

@@ -298,7 +298,7 @@ mod tests {
 
         let secret = "test-secret";
         unsafe { std::env::set_var("JWT_SECRET", secret) };
-        let owner_token = crate::auth::create_token_pair(&owner_id, secret)
+        let owner_token = crate::auth::create_token_pair(&owner_id, secret, 0)
             .unwrap()
             .access_token;
 
@@ -378,7 +378,7 @@ mod tests {
             .await
             .unwrap();
         let secret = "test-secret";
-        let token = crate::auth::create_token_pair(&user_id, secret)
+        let token = crate::auth::create_token_pair(&user_id, secret, 0)
             .unwrap()
             .access_token;
         (user_id, token)

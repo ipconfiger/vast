@@ -234,7 +234,7 @@ async fn expired_token_rejected() {
     assert_eq!(body["error"]["code"], "UNAUTHORIZED");
 
     // Test with a token signed with a different secret
-    let other_token = im_server::auth::create_token_pair("fake-user", "wrong-secret")
+    let other_token = im_server::auth::create_token_pair("fake-user", "wrong-secret", 0)
         .unwrap()
         .access_token;
     let (status, _) = get_json(&mut app, "/channels", &other_token).await;

@@ -69,6 +69,7 @@ struct UserRow {
     id: String,
     username: String,
     password_hash: String,
+    token_epoch: i64,
 }
 
 // ---------------------------------------------------------------------------
@@ -186,8 +187,9 @@ pub async fn register(
 
     tx.commit().await.map_err(AppError::from)?;
 
-    // Create token pair and response with user info
-    let tokens = auth::create_token_pair(&user_id, &state.config.jwt_secret)
+    // New users start at epoch 0 (the column's default). create_token_pair
+    // embeds the current epoch so a subsequent bump invalidates this pair.
+    let tokens = auth::create_token_pair(&user_id, &state.config.jwt_secret, 0)
         .map_err(AppError::from)?;
 
     created_response(AuthResponse::new(tokens, user_id, username))
@@ -197,7 +199,7 @@ pub async fn login(
     Json(body): Json<LoginRequest>,
 ) -> Result<(StatusCode, Json<AuthResponse>), AppError> {
     let user = sqlx::query_as::<_, UserRow>(
-        "SELECT id, username, password_hash FROM users WHERE username = ?",
+        "SELECT id, username, password_hash, token_epoch FROM users WHERE username = ?",
     )
     .bind(&body.username)
     .fetch_optional(&state.pool)
@@ -214,8 +216,9 @@ pub async fn login(
         ));
     }
 
-    // Create token pair and response with user info
-    let tokens = auth::create_token_pair(&user.id, &state.config.jwt_secret)
+    // Sign tokens with the user's current DB epoch so a subsequent
+    // token_epoch bump invalidates this pair.
+    let tokens = auth::create_token_pair(&user.id, &state.config.jwt_secret, user.token_epoch)
         .map_err(AppError::from)?;
 
     // Insert session record
@@ -244,8 +247,8 @@ pub async fn refresh(
     State(state): State<Arc<AppState>>,
     Json(body): Json<RefreshRequest>,
 ) -> Result<(StatusCode, Json<TokenPair>), AppError> {
-    let tokens = auth::refresh_access_token(&body.refresh_token, &state.config.jwt_secret)
-        .map_err(AppError::from)?;
+    let tokens = auth::refresh_access_token(&body.refresh_token, &state.config.jwt_secret, &state.pool)
+        .await?;
     ok_response(tokens)
 }
 
@@ -795,5 +798,180 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // -----------------------------------------------------------------------
+    // token_epoch forced-logout tests
+    // -----------------------------------------------------------------------
+
+    async fn get_authed(
+        app: &mut Router,
+        uri: &str,
+        token: &str,
+    ) -> (StatusCode, Value) {
+        let req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let val: Value = serde_json::from_slice(&body_bytes).unwrap_or(json!({}));
+        (status, val)
+    }
+
+    /// Given: a registered + logged-in user with epoch=0 in DB.
+    /// When:  GET /auth/profile with the fresh access token.
+    /// Then:  200 OK — epoch matches, user row exists.
+    #[tokio::test]
+    async fn epoch_matching_token_succeeds() {
+        ensure_env();
+        let pool = setup_pool().await;
+        let mut app = build_app(make_state(pool.clone()));
+
+        register_user(&mut app, "epochok", "Epoch123").await;
+        let (_, body) = post_json(
+            &mut app,
+            "/auth/login",
+            json!({"username": "epochok", "password": "Epoch123"}),
+        )
+        .await;
+        let access = body["access_token"].as_str().unwrap().to_string();
+
+        let (status, _) = get_authed(&mut app, "/auth/profile", &access).await;
+        assert_eq!(status, StatusCode::OK, "epoch-matching token must work");
+    }
+
+    /// Given: a logged-in user whose token embeds epoch=0.
+    /// When:  the DB bumps token_epoch to 1 (simulating forced logout /
+    ///        password reset), then the OLD access token and OLD refresh
+    ///        are reused.
+    /// Then:  both old tokens return 401.
+    #[tokio::test]
+    async fn epoch_bump_invalidates_old_access_and_refresh() {
+        ensure_env();
+        let pool = setup_pool().await;
+        let mut app = build_app(make_state(pool.clone()));
+
+        register_user(&mut app, "epochbump", "Epoch123").await;
+        let (_, body) = post_json(
+            &mut app,
+            "/auth/login",
+            json!({"username": "epochbump", "password": "Epoch123"}),
+        )
+        .await;
+        let access = body["access_token"].as_str().unwrap().to_string();
+        let refresh = body["refresh_token"].as_str().unwrap().to_string();
+
+        // Confirm token works pre-bump.
+        let (status, _) = get_authed(&mut app, "/auth/profile", &access).await;
+        assert_eq!(status, StatusCode::OK);
+
+        sqlx::query("UPDATE users SET token_epoch = token_epoch + 1 WHERE username = 'epochbump'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (status, body) = get_authed(&mut app, "/auth/profile", &access).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "old access must be rejected after epoch bump");
+        assert_eq!(body["error"]["code"], "UNAUTHORIZED");
+
+        let (status, body) = post_json(
+            &mut app,
+            "/auth/refresh",
+            json!({"refresh_token": refresh}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "old refresh must be rejected after epoch bump");
+        assert_eq!(body["error"]["code"], "UNAUTHORIZED");
+    }
+
+    /// Given: a JWT crafted with is_admin=true.
+    /// When:  it is presented to a user-facing endpoint via
+    ///        AuthenticatedUser.
+    /// Then:  validate_token rejects it (admin-backend isolation) → 401.
+    #[tokio::test]
+    async fn admin_token_rejected_on_user_endpoint() {
+        ensure_env();
+        let pool = setup_pool().await;
+        let mut app = build_app(make_state(pool));
+
+        let secret = "test-secret";
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as usize;
+        let claims = auth::Claims {
+            sub: "anyone".into(),
+            exp: now + 3600,
+            iat: now,
+            jti: uuid::Uuid::new_v4().to_string(),
+            is_refresh: false,
+            epoch: 0,
+            is_admin: true,
+        };
+        let token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::default(),
+            &claims,
+            &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+
+        let (status, body) = get_authed(&mut app, "/auth/profile", &token).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "UNAUTHORIZED");
+    }
+
+    /// Given: a valid-signature user JWT whose sub is "admin" (no such row
+    ///        in users).
+    /// When:  presented via AuthenticatedUser.
+    /// Then:  verify_user_epoch returns None → 401.
+    #[tokio::test]
+    async fn admin_principal_token_rejected_no_user_row() {
+        ensure_env();
+        let pool = setup_pool().await;
+        let mut app = build_app(make_state(pool));
+
+        let token = auth::create_token_pair("admin", "test-secret", 0)
+            .unwrap()
+            .access_token;
+
+        let (status, _) = get_authed(&mut app, "/auth/profile", &token).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "sub='admin' has no users row");
+    }
+
+    /// Given: a user is deleted AFTER a token was minted for them.
+    /// When:  the stale token is presented via AuthenticatedUser.
+    /// Then:  SELECT finds no row → 401.
+    #[tokio::test]
+    async fn deleted_user_token_rejected() {
+        ensure_env();
+        let pool = setup_pool().await;
+        let mut app = build_app(make_state(pool.clone()));
+
+        register_user(&mut app, "ghostuser", "Ghost123").await;
+        let (_, body) = post_json(
+            &mut app,
+            "/auth/login",
+            json!({"username": "ghostuser", "password": "Ghost123"}),
+        )
+        .await;
+        let access = body["access_token"].as_str().unwrap().to_string();
+
+        // Sanity: token works while user exists.
+        let (status, _) = get_authed(&mut app, "/auth/profile", &access).await;
+        assert_eq!(status, StatusCode::OK);
+
+        sqlx::query("DELETE FROM users WHERE username = 'ghostuser'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (status, _) = get_authed(&mut app, "/auth/profile", &access).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "deleted user's token must be rejected");
     }
 }
