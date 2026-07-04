@@ -122,6 +122,23 @@ pub struct InviteCodeView {
     pub created_at: i64,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ListAuditLogsQuery {
+    pub page: Option<i64>,
+    pub limit: Option<i64>,
+    pub action: Option<String>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct AuditLogView {
+    pub id: String,
+    pub action: String,
+    pub target_type: Option<String>,
+    pub target_id: Option<String>,
+    pub details: Option<String>,
+    pub performed_at: i64,
+}
+
 // ---------------------------------------------------------------------------
 // Audit helper
 // ---------------------------------------------------------------------------
@@ -657,10 +674,97 @@ pub async fn delete_invite_code(
 }
 
 // ---------------------------------------------------------------------------
+// Audit-log handler
+// ---------------------------------------------------------------------------
+
+/// GET /api/admin/audit-logs
+pub async fn list_audit_logs(
+    _admin: AdminAuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListAuditLogsQuery>,
+) -> Result<Json<Vec<AuditLogView>>, AppError> {
+    let page = params.page.unwrap_or(1).max(1);
+    let limit = params.limit.unwrap_or(20).clamp(1, 100);
+    let offset = (page - 1) * limit;
+
+    let logs: Vec<AuditLogView> = if let Some(ref action) = params.action {
+        sqlx::query_as::<_, AuditLogView>(
+            "SELECT id, action, target_type, target_id, details, performed_at \
+             FROM admin_audit_logs WHERE action = ? \
+             ORDER BY performed_at DESC, id LIMIT ? OFFSET ?",
+        )
+        .bind(action)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, AuditLogView>(
+            "SELECT id, action, target_type, target_id, details, performed_at \
+             FROM admin_audit_logs \
+             ORDER BY performed_at DESC, id LIMIT ? OFFSET ?",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.pool)
+        .await?
+    };
+
+    Ok(Json(logs))
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
-/// Build the `/admin` sub-router.
+/// # Admin API Route Contract (frozen for frontend T9)
+///
+/// All routes are mounted under `/api/admin`. Responses use `application/json`.
+/// Error bodies: `{"error":{"code":"ERROR_CODE","message":"..."}}`.
+///
+/// ## Authentication
+/// All endpoints except `/login` and `/refresh` require
+/// `Authorization: Bearer <admin_jwt>`. Admin JWTs carry `is_admin=true`;
+/// user JWTs are rejected with 401.
+///
+/// ## Endpoints
+///
+/// | Method | Path                                  | Request Body                                    | Success                     | Errors                  |
+/// |--------|---------------------------------------|-------------------------------------------------|-----------------------------|-------------------------|
+/// | POST   | /login                                | `{username, password}`                          | 200 `{access_token, refresh_token, expires_in}` | 401 403                |
+/// | POST   | /refresh                              | `{refresh_token}`                               | 200 `{access_token, refresh_token, expires_in}` | 401                    |
+/// | POST   | /logout                               | —                                               | 204                         | 401                     |
+/// | GET    | /me                                   | —                                               | 200 `{username}`            | 401                     |
+/// | GET    | /dashboard                            | —                                               | 200 `{total_users, active_sessions_24h, total_channels, total_messages, total_invite_codes, active_invite_codes}` (all i64) | 401 |
+/// | GET    | /users?page=&limit=&q=                | —                                               | 200 `[{id, username, display_name, avatar_url, created_at}]` | 401 |
+/// | GET    | /users/{id}                           | —                                               | 200 `{id, username, display_name, avatar_url, created_at}` | 401 404 |
+/// | PATCH  | /users/{id}                           | `{display_name?, disabled?}`                    | 200 `{id, username, display_name, avatar_url, created_at}` | 400 401 404 |
+/// | POST   | /users/{id}/reset-password            | `{new_password}`                                | 204                         | 401 404 422            |
+/// | DELETE | /users/{id}                           | —                                               | 204                         | 401 404                 |
+/// | GET    | /invite-codes?page=&limit=            | —                                               | 200 `[{code, created_by_user_id, max_uses, use_count, is_active, created_at}]` | 401 |
+/// | POST   | /invite-codes                         | `{code, max_uses?, is_active?}`                 | 201 `{code, created_by_user_id, max_uses, use_count, is_active, created_at}` | 400 401 409 |
+/// | PATCH  | /invite-codes/{code}                  | `{max_uses?, is_active?, reset_use_count?}`     | 200 `{code, created_by_user_id, max_uses, use_count, is_active, created_at}` | 401 404 |
+/// | DELETE | /invite-codes/{code}                  | —                                               | 204                         | 401 404                 |
+/// | GET    | /audit-logs?page=&limit=&action=      | —                                               | 200 `[{id, action, target_type, target_id, details, performed_at}]` | 401 |
+///
+/// ## Field types
+/// - `expires_in`: `u32` (seconds)
+/// - `display_name`, `avatar_url`: `String` (NOT NULL DEFAULT '')
+/// - `created_at`: `i64` (unix timestamp)
+/// - `created_by_user_id`: `Option<String>` (nullable; NULL for admin-created codes)
+/// - `max_uses`, `use_count`: `i64`
+/// - `is_active`: `bool`
+/// - `target_type`, `target_id`, `details`: `Option<String>` (nullable)
+/// - `performed_at`: `i64` (unix timestamp)
+/// - `disabled` (PATCH request): `Option<bool>` — `true` bumps `token_epoch`, revoking all user tokens
+///
+/// ## Audit
+/// All mutation endpoints (login, update/disable, reset-password, delete user,
+/// create/update/delete invite-code) append a row to `admin_audit_logs`.
+///
+/// ## Pagination
+/// `page` defaults to 1, `limit` defaults to 20, clamped to [1, 100].
+/// `offset = (page - 1) * limit`.
 pub fn admin_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/login", post(login))
@@ -687,6 +791,7 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
                     patch(update_invite_code).delete(delete_invite_code),
                 ),
         )
+        .route("/audit-logs", get(list_audit_logs))
 }
 
 // ===========================================================================
@@ -2194,5 +2299,176 @@ mod tests {
         assert!(actions.contains(&"invite.create".to_string()));
         assert!(actions.contains(&"invite.update".to_string()));
         assert!(actions.contains(&"invite.delete".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Audit-log tests
+    // -----------------------------------------------------------------------
+
+    async fn seed_audit_row(pool: &sqlx::SqlitePool, action: &str, ts: i64) {
+        let id = Uuid::now_v7().to_string();
+        sqlx::query(
+            "INSERT INTO admin_audit_logs (id, action, performed_at) VALUES (?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(action)
+        .bind(ts)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Given: a fresh database with no audit rows.
+    /// When:  GET /admin/audit-logs as admin.
+    /// Then:  200 OK with an empty array.
+    #[tokio::test]
+    async fn test_list_audit_logs_empty() {
+        let pool = setup_pool().await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, body) = get_with_token(
+            &mut app,
+            "/admin/audit-logs",
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 0);
+    }
+
+    /// Given: an admin mutation (create invite code) has been performed.
+    /// When:  GET /admin/audit-logs as admin.
+    /// Then:  200 OK containing a row with action "invite.create".
+    #[tokio::test]
+    async fn test_list_audit_logs_after_action() {
+        let pool = setup_pool().await;
+        clear_invite_codes(&pool).await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let _ = post_json_with_token(
+            &mut app,
+            "/admin/invite-codes",
+            json!({"code": "AUDITTEST"}),
+            &pair.access_token,
+        )
+        .await;
+
+        let (status, body) = get_with_token(
+            &mut app,
+            "/admin/audit-logs",
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        let arr = body.as_array().expect("array");
+        assert!(!arr.is_empty());
+        assert_eq!(arr[0]["action"], "invite.create");
+        assert_eq!(arr[0]["target_type"], "invite_code");
+        assert_eq!(arr[0]["target_id"], "AUDITTEST");
+    }
+
+    /// Given: audit rows for "user.disable" and "invite.create" exist.
+    /// When:  GET /admin/audit-logs?action=user.disable.
+    /// Then:  Only rows with action "user.disable" are returned.
+    #[tokio::test]
+    async fn test_list_audit_logs_action_filter() {
+        let pool = setup_pool().await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        seed_audit_row(&pool, "user.disable", now).await;
+        seed_audit_row(&pool, "invite.create", now - 1).await;
+        seed_audit_row(&pool, "user.disable", now - 2).await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, body) = get_with_token(
+            &mut app,
+            "/admin/audit-logs?action=user.disable",
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        let arr = body.as_array().expect("array");
+        assert_eq!(arr.len(), 2);
+        for row in arr {
+            assert_eq!(row["action"], "user.disable");
+        }
+    }
+
+    /// Given: five audit rows at different timestamps.
+    /// When:  GET /admin/audit-logs?page=2&limit=2.
+    /// Then:  2 rows from the correct offset, ordered by performed_at DESC.
+    #[tokio::test]
+    async fn test_list_audit_logs_pagination() {
+        let pool = setup_pool().await;
+        let base = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        for i in 0..5 {
+            seed_audit_row(&pool, &format!("act-{i}"), base + i).await;
+        }
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, body) = get_with_token(
+            &mut app,
+            "/admin/audit-logs?page=2&limit=2",
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        let arr = body.as_array().expect("array");
+        assert_eq!(arr.len(), 2);
+    }
+
+    /// Given: /admin/audit-logs requires admin authentication.
+    /// When:  GET without Authorization header.
+    /// Then:  401 Unauthorized.
+    #[tokio::test]
+    async fn test_list_audit_logs_without_token() {
+        let pool = setup_pool().await;
+        let app = build_app(make_state(pool, admin_enabled_config()));
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/audit-logs")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Given: a user JWT (is_admin = false).
+    /// When:  GET /admin/audit-logs with the user token.
+    /// Then:  401 Unauthorized — admin endpoints reject user tokens.
+    #[tokio::test]
+    async fn test_list_audit_logs_with_user_token() {
+        let pool = setup_pool().await;
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+
+        let user_pair =
+            crate::auth::create_token_pair("user-1", "test-secret", 0).unwrap();
+        let (status, body) = get_with_token(
+            &mut app,
+            "/admin/audit-logs",
+            &user_pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "UNAUTHORIZED");
     }
 }
