@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod middleware;
 pub use middleware::AuthenticatedUser;
 
@@ -40,8 +41,8 @@ pub struct TokenPair {
     pub expires_in: u32, // seconds
 }
 
-const ACCESS_TTL_SECS: u32 = 900;  // 15 minutes
-const REFRESH_TTL_SECS: u32 = 604800; // 7 days
+pub(crate) const ACCESS_TTL_SECS: u32 = 900;  // 15 minutes
+pub(crate) const REFRESH_TTL_SECS: u32 = 604800; // 7 days
 
 /// Create access + refresh token pair for a user.
 ///
