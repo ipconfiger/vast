@@ -101,7 +101,7 @@ export function MessageList({ channelId }: MessageListProps) {
   }
 
   return (
-    <div ref={parentRef} className="flex-1 overflow-y-auto">
+    <div ref={parentRef} data-testid="message-list-scroll" className="flex-1 overflow-y-auto">
       <div
         className="relative w-full"
         style={{ height: `${virtualizer.getTotalSize()}px` }}

@@ -68,3 +68,9 @@ export const useMessageStore = create<MessageState>()((set) => ({
       return { messagesByChannel: next, lastCursorByChannel: cursors }
     }),
 }))
+
+// E2E testability hook — `import.meta.env.DEV` is statically false in
+// production builds, so vite's dead-code elimination drops this entirely.
+if (import.meta.env.DEV) {
+  ;(window as unknown as { __messageStore?: typeof useMessageStore }).__messageStore = useMessageStore
+}
