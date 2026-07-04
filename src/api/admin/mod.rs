@@ -55,6 +55,16 @@ pub struct AdminMeResponse {
     pub username: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct DashboardStats {
+    pub total_users: i64,
+    pub active_sessions_24h: i64,
+    pub total_channels: i64,
+    pub total_messages: i64,
+    pub total_invite_codes: i64,
+    pub active_invite_codes: i64,
+}
+
 // ---------------------------------------------------------------------------
 // Audit helper
 // ---------------------------------------------------------------------------
@@ -185,6 +195,62 @@ pub async fn me(
     }))
 }
 
+/// GET /api/admin/dashboard
+///
+/// Returns aggregate platform statistics: total users, sessions active
+/// in the last 24 hours, total channels, messages, and invite codes
+/// (total + active). Runs 6 lightweight COUNT queries.
+pub async fn dashboard(
+    _admin: AdminAuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+) -> Result<(axum::http::StatusCode, Json<DashboardStats>), AppError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| AppError::Internal(format!("SystemTime before UNIX_EPOCH: {e}")))?
+        .as_secs() as i64;
+    let cutoff = now - 86400;
+
+    let total_users: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM users")
+            .fetch_one(&state.pool)
+            .await?;
+
+    let active_sessions_24h: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE is_active = 1 AND created_at >= ?")
+            .bind(cutoff)
+            .fetch_one(&state.pool)
+            .await?;
+
+    let total_channels: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM channels")
+            .fetch_one(&state.pool)
+            .await?;
+
+    let total_messages: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages")
+            .fetch_one(&state.pool)
+            .await?;
+
+    let total_invite_codes: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM invite_codes")
+            .fetch_one(&state.pool)
+            .await?;
+
+    let active_invite_codes: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM invite_codes WHERE is_active = 1")
+            .fetch_one(&state.pool)
+            .await?;
+
+    ok_response(DashboardStats {
+        total_users,
+        active_sessions_24h,
+        total_channels,
+        total_messages,
+        total_invite_codes,
+        active_invite_codes,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -196,6 +262,7 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/refresh", post(refresh))
         .route("/logout", post(logout))
         .route("/me", get(me))
+        .route("/dashboard", get(dashboard))
 }
 
 // ===========================================================================
@@ -524,5 +591,175 @@ mod tests {
         let (status, _body) = post_with_token(&mut app, "/admin/logout", &pair.access_token).await;
 
         assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+
+    // -----------------------------------------------------------------------
+    // Dashboard tests
+    // -----------------------------------------------------------------------
+
+    /// Given: a freshly migrated database with the seeded invite code removed.
+    /// When:  GET /admin/dashboard with a valid admin token.
+    /// Then:  200 OK with all six counts at 0.
+    #[tokio::test]
+    async fn test_dashboard_empty_db() {
+        let pool = setup_pool().await;
+        sqlx::query("DELETE FROM invite_codes")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, body) = get_with_token(&mut app, "/admin/dashboard", &pair.access_token).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["total_users"], 0);
+        assert_eq!(body["active_sessions_24h"], 0);
+        assert_eq!(body["total_channels"], 0);
+        assert_eq!(body["total_messages"], 0);
+        assert_eq!(body["total_invite_codes"], 0);
+        assert_eq!(body["active_invite_codes"], 0);
+    }
+
+    /// Given: 3 users, 3 sessions (2 recent+active, 1 old), 5 channels,
+    ///         10 messages, 4 invite codes (3 active, 1 inactive), with
+    ///         the seeded IM2024 invite code removed for deterministic counts.
+    /// When:  GET /admin/dashboard with a valid admin token.
+    /// Then:  200 OK with exact aggregate counts.
+    #[tokio::test]
+    async fn test_dashboard_with_data() {
+        let pool = setup_pool().await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        // Clear seeded invite code so counts are deterministic.
+        sqlx::query("DELETE FROM invite_codes")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        for i in 0..3 {
+            let id = format!("user-{i}");
+            sqlx::query("INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)")
+                .bind(&id)
+                .bind(format!("u{i}"))
+                .bind("hash")
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        for i in 0..2 {
+            let id = format!("session-{i}");
+            sqlx::query(
+                "INSERT INTO sessions (id, user_id, token_hash, is_refresh, created_at, expires_at, is_active) \
+                 VALUES (?, ?, ?, 0, ?, ?, 1)",
+            )
+            .bind(&id)
+            .bind(format!("user-{i}"))
+            .bind(format!("hash-{i}"))
+            .bind(now)
+            .bind(now + 3600)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO sessions (id, user_id, token_hash, is_refresh, created_at, expires_at, is_active) \
+             VALUES (?, ?, ?, 0, ?, ?, 1)",
+        )
+        .bind("session-old")
+        .bind("user-0")
+        .bind("hash-old")
+        .bind(now - 100_000)
+        .bind(now + 3600)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for i in 0..5 {
+            let id = format!("channel-{i}");
+            sqlx::query("INSERT INTO channels (id, name) VALUES (?, ?)")
+                .bind(&id)
+                .bind(format!("ch{i}"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        for i in 0..10 {
+            let mid = format!("msg-{i}");
+            sqlx::query(
+                "INSERT INTO messages (msg_id, channel_id, sender_id, msg_type, payload) \
+                 VALUES (?, 'channel-0', 'user-0', 'text', '{}')",
+            )
+            .bind(&mid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        for i in 0..3 {
+            let code = format!("active-{i}");
+            sqlx::query("INSERT INTO invite_codes (code, is_active) VALUES (?, 1)")
+                .bind(&code)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO invite_codes (code, is_active) VALUES (?, 0)")
+            .bind("inactive")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, body) = get_with_token(&mut app, "/admin/dashboard", &pair.access_token).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["total_users"], 3);
+        assert_eq!(body["active_sessions_24h"], 2);
+        assert_eq!(body["total_channels"], 5);
+        assert_eq!(body["total_messages"], 10);
+        assert_eq!(body["total_invite_codes"], 4);
+        assert_eq!(body["active_invite_codes"], 3);
+    }
+
+    /// Given: /admin/dashboard requires admin authentication.
+    /// When:  GET /admin/dashboard with no Authorization header.
+    /// Then:  401 Unauthorized.
+    #[tokio::test]
+    async fn test_dashboard_without_token() {
+        let pool = setup_pool().await;
+        let app = build_app(make_state(pool, admin_enabled_config()));
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/dashboard")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Given: a user JWT (is_admin = false).
+    /// When:  GET /admin/dashboard with the user token.
+    /// Then:  401 Unauthorized — admin endpoints reject user tokens.
+    #[tokio::test]
+    async fn test_dashboard_with_user_token() {
+        let pool = setup_pool().await;
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+
+        let user_pair = crate::auth::create_token_pair("user-1", "test-secret", 0).unwrap();
+        let (status, body) =
+            get_with_token(&mut app, "/admin/dashboard", &user_pair.access_token).await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "UNAUTHORIZED");
     }
 }
