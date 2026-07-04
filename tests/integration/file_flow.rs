@@ -6,7 +6,7 @@ use axum::{
     http::{header, Method, Request, StatusCode},
     Router,
 };
-use im_server::{AppConfig, AppState, TlsMode};
+use im_server::{AppConfig, AppState};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -48,7 +48,7 @@ fn build_app_with_tmpdir(pool: sqlx::SqlitePool, tmp_dir: std::path::PathBuf) ->
             data_dir: tmp_dir,
             jwt_secret: "integration-test-secret".to_string(),
             invite_code: "E2ETEST".to_string(),
-            tls_mode: TlsMode::None,
+            ..AppConfig::test_default()
         },
     });
     im_server::api_routes().with_state(state)

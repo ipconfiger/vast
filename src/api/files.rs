@@ -310,7 +310,7 @@ mod tests {
             data_dir: tmp,
             jwt_secret: "test".into(),
             invite_code: "test".into(),
-            tls_mode: crate::TlsMode::None,
+            ..crate::AppConfig::test_default()
         };
 
         // In-memory SQLite pool so AppState is happy (runs migrations).

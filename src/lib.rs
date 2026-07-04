@@ -29,6 +29,10 @@ pub struct AppConfig {
     pub data_dir: PathBuf,
     pub jwt_secret: String,
     pub invite_code: String,
+    pub admin_username: String,
+    /// Argon2id digest of the admin password. Empty string means the admin
+    /// backend is disabled (no ADMIN_PASSWORD configured).
+    pub admin_password_hash: String,
     pub tls_mode: TlsMode,
 }
 
@@ -60,13 +64,40 @@ impl AppConfig {
             _ => TlsMode::None,
         };
 
+        let admin_username = std::env::var("ADMIN_USERNAME")
+            .unwrap_or_else(|_| "admin".to_string());
+
+        let admin_password_hash = std::env::var("ADMIN_PASSWORD")
+            .ok()
+            .filter(|pw| !pw.is_empty())
+            .and_then(|pw| auth::hash_password(&pw).ok())
+            .unwrap_or_default();
+
         Self {
             jwt_secret: std::env::var("JWT_SECRET")
                 .unwrap_or_else(|_| "dev-secret-change-me".to_string()),
             invite_code: std::env::var("INVITE_CODE")
                 .unwrap_or_else(|_| "IM2024".to_string()),
+            admin_username,
+            admin_password_hash,
             data_dir,
             tls_mode,
+        }
+    }
+
+    /// Base `AppConfig` for the in-tree test helpers (`src/api/*.rs` test
+    /// modules and `tests/integration/*.rs`). Sets deterministic non-secret
+    /// values; the admin backend is disabled (empty hash). Test code overrides
+    /// individual fields via struct-update syntax, e.g.
+    /// `AppConfig { jwt_secret: secret.to_string(), ..AppConfig::test_default() }`.
+    pub fn test_default() -> Self {
+        Self {
+            data_dir: std::path::PathBuf::from("/tmp"),
+            jwt_secret: "test-secret".to_string(),
+            invite_code: "TESTINVITE".to_string(),
+            admin_username: "admin".to_string(),
+            admin_password_hash: String::new(),
+            tls_mode: TlsMode::None,
         }
     }
 }
@@ -213,4 +244,58 @@ pub fn build_app(state: Arc<AppState>) -> Router {
             Duration::from_secs(30),
         ))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Serialize tests that mutate process-wide env vars to prevent data races
+    /// between concurrent test threads. Tests acquiring this lock may freely
+    /// call `unsafe { std::env::set_var(...) }`.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Given: ADMIN_PASSWORD is unset.
+    /// When:  AppConfig::from_env() runs.
+    /// Then:  admin_username falls back to "admin" and admin_password_hash is
+    ///        empty (admin backend disabled).
+    #[test]
+    fn from_env_without_admin_password_yields_empty_hash() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: test-only; serialized via ENV_LOCK to prevent data races
+        // with concurrent std::env::var readers.
+        unsafe {
+            std::env::remove_var("ADMIN_PASSWORD");
+            std::env::remove_var("ADMIN_USERNAME");
+        }
+        let cfg = AppConfig::from_env();
+        assert_eq!(cfg.admin_username, "admin");
+        assert_eq!(cfg.admin_password_hash, "");
+    }
+
+    /// Given: ADMIN_USERNAME and ADMIN_PASSWORD are both set.
+    /// When:  AppConfig::from_env() runs.
+    /// Then:  admin_username reflects the env value, admin_password_hash is a
+    ///        non-empty Argon2 digest, and the cleartext verifies against it.
+    ///        The cleartext password is never retained on the struct.
+    #[test]
+    fn from_env_with_admin_password_yields_verifiable_hash() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: test-only; serialized via ENV_LOCK.
+        unsafe {
+            std::env::set_var("ADMIN_USERNAME", "root");
+            std::env::set_var("ADMIN_PASSWORD", "S3cret-Pass-123!");
+        }
+        let cfg = AppConfig::from_env();
+        assert_eq!(cfg.admin_username, "root");
+        assert!(!cfg.admin_password_hash.is_empty());
+        assert!(
+            auth::verify_password("S3cret-Pass-123!", &cfg.admin_password_hash).unwrap(),
+            "admin password hash must verify against the cleartext"
+        );
+        assert!(
+            !auth::verify_password("wrong", &cfg.admin_password_hash).unwrap(),
+            "an incorrect password must not verify"
+        );
+    }
 }

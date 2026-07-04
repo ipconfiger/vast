@@ -329,10 +329,9 @@ mod tests {
             pool: pool.clone(),
             ws_pool: Arc::new(ws::ConnectionPool::new()),
             config: crate::AppConfig {
-                data_dir: std::path::PathBuf::from("/tmp"),
                 jwt_secret: secret.to_string(),
                 invite_code: "TEST".to_string(),
-                tls_mode: crate::TlsMode::None,
+                ..crate::AppConfig::test_default()
             },
         });
 

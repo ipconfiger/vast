@@ -6,7 +6,7 @@ use axum::{
     Router,
 };
 use futures_util::{SinkExt, StreamExt};
-use im_server::{AppConfig, AppState, TlsMode};
+use im_server::{AppConfig, AppState};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -45,10 +45,9 @@ fn make_state_with_ws_pool(pool: sqlx::SqlitePool, ws_pool: Arc<im_server::ws::C
         pool,
         ws_pool,
         config: AppConfig {
-            data_dir: std::path::PathBuf::from("/tmp"),
             jwt_secret: "integration-test-secret".to_string(),
             invite_code: "E2ETEST".to_string(),
-            tls_mode: TlsMode::None,
+            ..AppConfig::test_default()
         },
     })
 }

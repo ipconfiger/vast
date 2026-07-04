@@ -5,7 +5,7 @@ use axum::{
     http::{header, Request, StatusCode},
     Router,
 };
-use im_server::{AppConfig, AppState, TlsMode};
+use im_server::{AppConfig, AppState};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -46,10 +46,9 @@ fn make_state(pool: sqlx::SqlitePool) -> Arc<AppState> {
         pool,
         ws_pool: Arc::new(im_server::ws::ConnectionPool::new()),
         config: AppConfig {
-            data_dir: std::path::PathBuf::from("/tmp"),
             jwt_secret: "integration-test-secret".to_string(),
             invite_code: "E2ETEST".to_string(),
-            tls_mode: TlsMode::None,
+            ..AppConfig::test_default()
         },
     })
 }

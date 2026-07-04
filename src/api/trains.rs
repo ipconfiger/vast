@@ -22,6 +22,7 @@ pub struct TrainReply {
     pub user_id: String,
     pub username: String,
     pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
     pub content: String,
     pub created_at: i64,
 }
@@ -150,9 +151,9 @@ pub async fn join_train(
             })?;
 
     // 5. Hydrate sender info
-    let (username, display_name): (String, String) =
-        sqlx::query_as::<_, (String, String)>(
-            "SELECT username, display_name FROM users WHERE id = ?",
+    let (username, display_name, avatar_url): (String, String, String) =
+        sqlx::query_as::<_, (String, String, String)>(
+            "SELECT username, display_name, avatar_url FROM users WHERE id = ?",
         )
         .bind(&user_id)
         .fetch_one(&state.pool)
@@ -166,6 +167,11 @@ pub async fn join_train(
             None
         } else {
             Some(display_name.clone())
+        },
+        avatar_url: if avatar_url.is_empty() {
+            None
+        } else {
+            Some(avatar_url.clone())
         },
         content: body.content,
         created_at: chrono::Utc::now().timestamp(),
@@ -291,10 +297,9 @@ mod tests {
             pool: pool.clone(),
             ws_pool: ws_pool.clone(),
             config: crate::AppConfig {
-                data_dir: std::path::PathBuf::from("/tmp"),
                 jwt_secret: secret.to_string(),
                 invite_code: "TEST".to_string(),
-                tls_mode: crate::TlsMode::None,
+                ..crate::AppConfig::test_default()
             },
         });
 

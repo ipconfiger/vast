@@ -35,12 +35,7 @@ mod tests {
         Arc::new(AppState {
             pool: sqlx::SqlitePool::connect_lazy(":memory:").unwrap(),
             ws_pool: Arc::new(crate::ws::ConnectionPool::new()),
-            config: crate::AppConfig {
-                data_dir: std::path::PathBuf::from("/tmp"),
-                jwt_secret: "test-secret".to_string(),
-                invite_code: "TESTINVITE".to_string(),
-                tls_mode: crate::TlsMode::None,
-            },
+            config: crate::AppConfig::test_default(),
         })
     }
 
