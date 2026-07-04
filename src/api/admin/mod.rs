@@ -5,7 +5,7 @@
 //! rejected by user-facing middleware (and vice versa).
 
 use axum::{
-    extract::State,
+    extract::{Path, Query, State},
     routing::{get, post},
     Json, Router,
 };
@@ -63,6 +63,33 @@ pub struct DashboardStats {
     pub total_messages: i64,
     pub total_invite_codes: i64,
     pub active_invite_codes: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListUsersQuery {
+    pub page: Option<i64>,
+    pub limit: Option<i64>,
+    pub q: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateUserRequest {
+    pub display_name: Option<String>,
+    pub disabled: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResetPasswordRequest {
+    pub new_password: String,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct AdminUserView {
+    pub id: String,
+    pub username: String,
+    pub display_name: String,
+    pub avatar_url: String,
+    pub created_at: i64,
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +279,192 @@ pub async fn dashboard(
 }
 
 // ---------------------------------------------------------------------------
+// User management handlers
+// ---------------------------------------------------------------------------
+
+/// GET /api/admin/users
+///
+/// Paginated user list with optional username LIKE search.
+pub async fn list_users(
+    _admin: AdminAuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListUsersQuery>,
+) -> Result<Json<Vec<AdminUserView>>, AppError> {
+    let page = params.page.unwrap_or(1).max(1);
+    let limit = params.limit.unwrap_or(20).clamp(1, 100);
+    let offset = (page - 1) * limit;
+
+    let users: Vec<AdminUserView> = if let Some(ref q) = params.q {
+        sqlx::query_as::<_, AdminUserView>(
+            "SELECT id, username, display_name, avatar_url, created_at FROM users \
+             WHERE username LIKE '%' || ? || '%' \
+             ORDER BY created_at DESC, id \
+             LIMIT ? OFFSET ?",
+        )
+        .bind(q)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, AdminUserView>(
+            "SELECT id, username, display_name, avatar_url, created_at FROM users \
+             ORDER BY created_at DESC, id \
+             LIMIT ? OFFSET ?",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.pool)
+        .await?
+    };
+
+    Ok(Json(users))
+}
+
+/// GET /api/admin/users/{id}
+pub async fn get_user(
+    _admin: AdminAuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<AdminUserView>, AppError> {
+    let user = sqlx::query_as::<_, AdminUserView>(
+        "SELECT id, username, display_name, avatar_url, created_at FROM users WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    user.map(Json)
+        .ok_or_else(|| AppError::NotFound("User not found".to_string()))
+}
+
+/// PATCH /api/admin/users/{id}
+///
+/// Updates display_name and/or bumps token_epoch (disable). The epoch
+/// bump immediately revokes all the user's existing tokens (T2 mechanism).
+pub async fn update_user(
+    _admin: AdminAuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateUserRequest>,
+) -> Result<Json<AdminUserView>, AppError> {
+    let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM users WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.pool)
+        .await?;
+    if exists.is_none() {
+        return Err(AppError::NotFound("User not found".to_string()));
+    }
+
+    if let Some(ref name) = body.display_name {
+        let trimmed = name.trim();
+        if trimmed.len() > 32 {
+            return Err(AppError::BadRequest(
+                "Display name must be 32 characters or fewer".into(),
+            ));
+        }
+        sqlx::query("UPDATE users SET display_name = ? WHERE id = ?")
+            .bind(trimmed)
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
+    }
+
+    let disabled = body.disabled == Some(true);
+    if disabled {
+        sqlx::query("UPDATE users SET token_epoch = token_epoch + 1 WHERE id = ?")
+            .bind(&id)
+            .execute(&state.pool)
+            .await?;
+    }
+
+    let action = if disabled { "user.disable" } else { "user.update" };
+    let _ = audit(&state.pool, action, Some("user"), Some(&id), None).await;
+
+    let user = sqlx::query_as::<_, AdminUserView>(
+        "SELECT id, username, display_name, avatar_url, created_at FROM users WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_one(&state.pool)
+    .await?;
+
+    Ok(Json(user))
+}
+
+/// POST /api/admin/users/{id}/reset-password
+///
+/// Sets a new password hash and bumps token_epoch, forcing the user to
+/// re-authenticate with the new password. All existing tokens are
+/// immediately invalidated.
+pub async fn reset_password(
+    _admin: AdminAuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<ResetPasswordRequest>,
+) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), AppError> {
+    if body.new_password.len() < 8 {
+        return Err(AppError::ValidationError(
+            "Password must be at least 8 characters".to_string(),
+        ));
+    }
+    let has_letter = body.new_password.chars().any(|c| c.is_ascii_alphabetic());
+    let has_digit = body.new_password.chars().any(|c| c.is_ascii_digit());
+    if !has_letter || !has_digit {
+        return Err(AppError::ValidationError(
+            "Password must contain both letters and digits".to_string(),
+        ));
+    }
+
+    let hash = crate::auth::hash_password(&body.new_password)
+        .map_err(|e| AppError::Internal(format!("Failed to hash password: {e}")))?;
+
+    let result = sqlx::query(
+        "UPDATE users SET password_hash = ?, token_epoch = token_epoch + 1 WHERE id = ?",
+    )
+    .bind(&hash)
+    .bind(&id)
+    .execute(&state.pool)
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound("User not found".to_string()));
+    }
+
+    let _ = audit(
+        &state.pool,
+        "user.reset_password",
+        Some("user"),
+        Some(&id),
+        None,
+    )
+    .await;
+
+    no_content()
+}
+
+/// DELETE /api/admin/users/{id}
+///
+/// Removes the user row; FK cascades clean up sessions, messages, etc.
+pub async fn delete_user(
+    _admin: AdminAuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), AppError> {
+    let result = sqlx::query("DELETE FROM users WHERE id = ?")
+        .bind(&id)
+        .execute(&state.pool)
+        .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::NotFound("User not found".to_string()));
+    }
+
+    let _ = audit(&state.pool, "user.delete", Some("user"), Some(&id), None).await;
+
+    no_content()
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -263,6 +476,16 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
         .route("/logout", post(logout))
         .route("/me", get(me))
         .route("/dashboard", get(dashboard))
+        .nest(
+            "/users",
+            Router::new()
+                .route("/", get(list_users))
+                .route(
+                    "/{id}",
+                    get(get_user).patch(update_user).delete(delete_user),
+                )
+                .route("/{id}/reset-password", post(reset_password)),
+        )
 }
 
 // ===========================================================================
@@ -365,6 +588,82 @@ mod tests {
             .unwrap();
         let val: Value = serde_json::from_slice(&body_bytes).unwrap_or(json!({}));
         (status, val)
+    }
+
+    async fn patch_json_with_token(
+        app: &mut Router,
+        uri: &str,
+        body: Value,
+        token: &str,
+    ) -> (StatusCode, Value) {
+        let req = Request::builder()
+            .method("PATCH")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let val: Value = serde_json::from_slice(&body_bytes).unwrap_or(json!({}));
+        (status, val)
+    }
+
+    async fn delete_with_token(
+        app: &mut Router,
+        uri: &str,
+        token: &str,
+    ) -> (StatusCode, Value) {
+        let req = Request::builder()
+            .method("DELETE")
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let val: Value = serde_json::from_slice(&body_bytes).unwrap_or(json!({}));
+        (status, val)
+    }
+
+    async fn post_json_with_token(
+        app: &mut Router,
+        uri: &str,
+        body: Value,
+        token: &str,
+    ) -> (StatusCode, Value) {
+        let req = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let val: Value = serde_json::from_slice(&body_bytes).unwrap_or(json!({}));
+        (status, val)
+    }
+
+    async fn seed_user(pool: &sqlx::SqlitePool, username: &str) -> String {
+        let id = Uuid::now_v7().to_string();
+        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)")
+            .bind(&id)
+            .bind(username)
+            .bind("hash")
+            .execute(pool)
+            .await
+            .unwrap();
+        id
     }
 
     // -----------------------------------------------------------------------
@@ -761,5 +1060,530 @@ mod tests {
 
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(body["error"]["code"], "UNAUTHORIZED");
+    }
+
+    // -----------------------------------------------------------------------
+    // list_users tests
+    // -----------------------------------------------------------------------
+
+    /// Given: three users exist in the database.
+    /// When:  GET /admin/users as admin.
+    /// Then:  200 OK returning all users ordered by created_at DESC.
+    #[tokio::test]
+    async fn test_list_users_success() {
+        let pool = setup_pool().await;
+        seed_user(&pool, "alice").await;
+        seed_user(&pool, "bob").await;
+        seed_user(&pool, "carol").await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, body) =
+            get_with_token(&mut app, "/admin/users", &pair.access_token).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let arr = body.as_array().expect("array");
+        assert_eq!(arr.len(), 3);
+        for u in arr {
+            assert!(u.get("password_hash").is_none());
+        }
+    }
+
+    /// Given: users "alice", "bob", "carol" exist.
+    /// When:  GET /admin/users?q=ali as admin.
+    /// Then:  200 OK returning only the matching user.
+    #[tokio::test]
+    async fn test_list_users_with_search() {
+        let pool = setup_pool().await;
+        seed_user(&pool, "alice").await;
+        seed_user(&pool, "bob").await;
+        seed_user(&pool, "carol").await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, body) =
+            get_with_token(&mut app, "/admin/users?q=ali", &pair.access_token).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let arr = body.as_array().expect("array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["username"], "alice");
+    }
+
+    /// Given: /admin/users requires admin authentication.
+    /// When:  GET /admin/users with no token.
+    /// Then:  401 Unauthorized.
+    #[tokio::test]
+    async fn test_list_users_unauthorized() {
+        let pool = setup_pool().await;
+        let app = build_app(make_state(pool, admin_enabled_config()));
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/users")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // -----------------------------------------------------------------------
+    // get_user tests
+    // -----------------------------------------------------------------------
+
+    /// Given: a user exists.
+    /// When:  GET /admin/users/{id} as admin.
+    /// Then:  200 OK with the user's details.
+    #[tokio::test]
+    async fn test_get_user_success() {
+        let pool = setup_pool().await;
+        let uid = seed_user(&pool, "alice").await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, body) = get_with_token(
+            &mut app,
+            &format!("/admin/users/{uid}"),
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["username"], "alice");
+        assert!(body.get("password_hash").is_none());
+    }
+
+    /// Given: no user with the given id.
+    /// When:  GET /admin/users/{id} as admin.
+    /// Then:  404 Not Found.
+    #[tokio::test]
+    async fn test_get_user_not_found() {
+        let pool = setup_pool().await;
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, _body) =
+            get_with_token(&mut app, "/admin/users/nonexistent", &pair.access_token).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    // -----------------------------------------------------------------------
+    // update_user tests
+    // -----------------------------------------------------------------------
+
+    /// Given: a user exists.
+    /// When:  PATCH /admin/users/{id} with display_name.
+    /// Then:  200 OK, display_name updated in DB.
+    #[tokio::test]
+    async fn test_update_user_display_name() {
+        let pool = setup_pool().await;
+        let uid = seed_user(&pool, "alice").await;
+        let pool_clone = pool.clone();
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, body) = patch_json_with_token(
+            &mut app,
+            &format!("/admin/users/{uid}"),
+            json!({"display_name": "Alice Updated"}),
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["display_name"], "Alice Updated");
+
+        let db_name: String =
+            sqlx::query_scalar("SELECT display_name FROM users WHERE id = ?")
+                .bind(&uid)
+                .fetch_one(&pool_clone)
+                .await
+                .unwrap();
+        assert_eq!(db_name, "Alice Updated");
+    }
+
+    /// Given: display name is limited to 32 characters.
+    /// When:  PATCH with a 33-char display_name.
+    /// Then:  400 Bad Request.
+    #[tokio::test]
+    async fn test_update_user_display_name_too_long() {
+        let pool = setup_pool().await;
+        let uid = seed_user(&pool, "alice").await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let long_name = "x".repeat(33);
+        let (status, _body) = patch_json_with_token(
+            &mut app,
+            &format!("/admin/users/{uid}"),
+            json!({"display_name": long_name}),
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// Given: no user with the given id.
+    /// When:  PATCH /admin/users/{id}.
+    /// Then:  404 Not Found.
+    #[tokio::test]
+    async fn test_update_user_not_found() {
+        let pool = setup_pool().await;
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, _body) = patch_json_with_token(
+            &mut app,
+            "/admin/users/nonexistent",
+            json!({"display_name": "X"}),
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    // -----------------------------------------------------------------------
+    // reset_password tests
+    // -----------------------------------------------------------------------
+
+    /// Given: a user exists.
+    /// When:  POST /admin/users/{id}/reset-password with a valid password.
+    /// Then:  204 No Content, password_hash changed in DB.
+    #[tokio::test]
+    async fn test_reset_password_success() {
+        let pool = setup_pool().await;
+        let uid = seed_user(&pool, "alice").await;
+        let pool_clone = pool.clone();
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, _body) = post_json_with_token(
+            &mut app,
+            &format!("/admin/users/{uid}/reset-password"),
+            json!({"new_password": "newpass123"}),
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let new_hash: String =
+            sqlx::query_scalar("SELECT password_hash FROM users WHERE id = ?")
+                .bind(&uid)
+                .fetch_one(&pool_clone)
+                .await
+                .unwrap();
+        assert_ne!(new_hash, "hash");
+    }
+
+    /// Given: password must be at least 8 characters.
+    /// When:  POST reset-password with "short".
+    /// Then:  422 Unprocessable Entity.
+    #[tokio::test]
+    async fn test_reset_password_too_short() {
+        let pool = setup_pool().await;
+        let uid = seed_user(&pool, "alice").await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, _body) = post_json_with_token(
+            &mut app,
+            &format!("/admin/users/{uid}/reset-password"),
+            json!({"new_password": "short"}),
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    /// Given: password must contain both letters and digits.
+    /// When:  POST reset-password with all-letters password.
+    /// Then:  422 Unprocessable Entity.
+    #[tokio::test]
+    async fn test_reset_password_no_digit() {
+        let pool = setup_pool().await;
+        let uid = seed_user(&pool, "alice").await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, _body) = post_json_with_token(
+            &mut app,
+            &format!("/admin/users/{uid}/reset-password"),
+            json!({"new_password": "onlyletters"}),
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    /// Given: no user with the given id.
+    /// When:  POST reset-password.
+    /// Then:  404 Not Found.
+    #[tokio::test]
+    async fn test_reset_password_not_found() {
+        let pool = setup_pool().await;
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, _body) = post_json_with_token(
+            &mut app,
+            "/admin/users/nonexistent/reset-password",
+            json!({"new_password": "newpass123"}),
+            &pair.access_token,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    // -----------------------------------------------------------------------
+    // delete_user tests
+    // -----------------------------------------------------------------------
+
+    /// Given: a user exists.
+    /// When:  DELETE /admin/users/{id}.
+    /// Then:  204 No Content; user row removed from DB.
+    #[tokio::test]
+    async fn test_delete_user_success() {
+        let pool = setup_pool().await;
+        let uid = seed_user(&pool, "alice").await;
+        let pool_clone = pool.clone();
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, _body) =
+            delete_with_token(&mut app, &format!("/admin/users/{uid}"), &pair.access_token)
+                .await;
+
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id = ?")
+                .bind(&uid)
+                .fetch_one(&pool_clone)
+                .await
+                .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    /// Given: no user with the given id.
+    /// When:  DELETE /admin/users/{id}.
+    /// Then:  404 Not Found.
+    #[tokio::test]
+    async fn test_delete_user_not_found() {
+        let pool = setup_pool().await;
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, _body) =
+            delete_with_token(&mut app, "/admin/users/nonexistent", &pair.access_token)
+                .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    // -----------------------------------------------------------------------
+    // CRITICAL: epoch revocation proofs (disable / reset / delete)
+    // -----------------------------------------------------------------------
+
+    /// Given: a regular user holds a valid token (epoch 0).
+    /// When:  Admin disables the user via PATCH (epoch → 1).
+    /// Then:  The old token is rejected by verify_user_epoch AND
+    ///        refresh_access_token fails — proving real revocation.
+    #[tokio::test]
+    async fn test_disable_user_revokes_existing_tokens() {
+        let pool = setup_pool().await;
+        let uid = seed_user(&pool, "alice").await;
+        let pool_clone = pool.clone();
+
+        let user_pair =
+            crate::auth::create_token_pair(&uid, "test-secret", 0).unwrap();
+
+        assert!(crate::auth::verify_user_epoch(&pool_clone, &uid, 0)
+            .await
+            .is_ok());
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, _body) = patch_json_with_token(
+            &mut app,
+            &format!("/admin/users/{uid}"),
+            json!({"disabled": true}),
+            &pair.access_token,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let db_epoch: i64 =
+            sqlx::query_scalar("SELECT token_epoch FROM users WHERE id = ?")
+                .bind(&uid)
+                .fetch_one(&pool_clone)
+                .await
+                .unwrap();
+        assert_eq!(db_epoch, 1);
+
+        assert!(
+            crate::auth::verify_user_epoch(&pool_clone, &uid, 0)
+                .await
+                .is_err(),
+            "old token must be rejected after disable"
+        );
+
+        let refresh_result = crate::auth::refresh_access_token(
+            &user_pair.refresh_token,
+            "test-secret",
+            &pool_clone,
+        )
+        .await;
+        assert!(
+            refresh_result.is_err(),
+            "old refresh token must be rejected after disable"
+        );
+    }
+
+    /// Given: a regular user holds a valid token (epoch 0).
+    /// When:  Admin resets the user's password (epoch → 1).
+    /// Then:  The old token is rejected by verify_user_epoch AND
+    ///        refresh_access_token fails — proving real revocation.
+    #[tokio::test]
+    async fn test_reset_password_revokes_existing_tokens() {
+        let pool = setup_pool().await;
+        let uid = seed_user(&pool, "alice").await;
+        let pool_clone = pool.clone();
+
+        let user_pair =
+            crate::auth::create_token_pair(&uid, "test-secret", 0).unwrap();
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, _body) = post_json_with_token(
+            &mut app,
+            &format!("/admin/users/{uid}/reset-password"),
+            json!({"new_password": "brandnew1"}),
+            &pair.access_token,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let db_epoch: i64 =
+            sqlx::query_scalar("SELECT token_epoch FROM users WHERE id = ?")
+                .bind(&uid)
+                .fetch_one(&pool_clone)
+                .await
+                .unwrap();
+        assert_eq!(db_epoch, 1);
+
+        assert!(
+            crate::auth::verify_user_epoch(&pool_clone, &uid, 0)
+                .await
+                .is_err(),
+            "old token must be rejected after password reset"
+        );
+
+        let refresh_result = crate::auth::refresh_access_token(
+            &user_pair.refresh_token,
+            "test-secret",
+            &pool_clone,
+        )
+        .await;
+        assert!(
+            refresh_result.is_err(),
+            "old refresh token must be rejected after password reset"
+        );
+    }
+
+    /// Given: a regular user holds a valid token (epoch 0).
+    /// When:  Admin deletes the user (row removed).
+    /// Then:  verify_user_epoch returns "User not found" AND
+    ///        refresh_access_token fails — proving the account is gone.
+    #[tokio::test]
+    async fn test_delete_user_revokes_existing_tokens() {
+        let pool = setup_pool().await;
+        let uid = seed_user(&pool, "alice").await;
+        let pool_clone = pool.clone();
+
+        let user_pair =
+            crate::auth::create_token_pair(&uid, "test-secret", 0).unwrap();
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (status, _body) =
+            delete_with_token(&mut app, &format!("/admin/users/{uid}"), &pair.access_token)
+                .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let epoch_check =
+            crate::auth::verify_user_epoch(&pool_clone, &uid, 0).await;
+        assert!(
+            matches!(
+                epoch_check,
+                Err(crate::error::AppError::Unauthorized(ref m))
+                    if m.contains("not found")
+            ),
+            "deleted user's token must be rejected as 'not found', got: {epoch_check:?}"
+        );
+
+        let refresh_result = crate::auth::refresh_access_token(
+            &user_pair.refresh_token,
+            "test-secret",
+            &pool_clone,
+        )
+        .await;
+        assert!(
+            refresh_result.is_err(),
+            "deleted user's refresh token must be rejected"
+        );
+    }
+
+    /// Given: all user-facing responses must omit the password hash.
+    /// When:  list, get, and update endpoints are called.
+    /// Then:  no JSON body contains a "password_hash" field.
+    #[tokio::test]
+    async fn test_password_hash_never_exposed() {
+        let pool = setup_pool().await;
+        let uid = seed_user(&pool, "alice").await;
+
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair("test-secret").unwrap();
+
+        let (_, list_body) =
+            get_with_token(&mut app, "/admin/users", &pair.access_token).await;
+        for u in list_body.as_array().unwrap() {
+            assert!(u.get("password_hash").is_none());
+        }
+
+        let (_, get_body) = get_with_token(
+            &mut app,
+            &format!("/admin/users/{uid}"),
+            &pair.access_token,
+        )
+        .await;
+        assert!(get_body.get("password_hash").is_none());
+
+        let (_, patch_body) = patch_json_with_token(
+            &mut app,
+            &format!("/admin/users/{uid}"),
+            json!({"display_name": "X"}),
+            &pair.access_token,
+        )
+        .await;
+        assert!(patch_body.get("password_hash").is_none());
     }
 }
