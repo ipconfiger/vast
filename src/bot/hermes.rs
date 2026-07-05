@@ -99,7 +99,8 @@ impl HermesClient {
             "stream": false
         });
 
-        let url = format!("{}/v1/chat/completions", api_url.trim_end_matches('/'));
+        let base = api_url.trim_end_matches('/').trim_end_matches("/v1");
+        let url = format!("{}/v1/chat/completions", base);
         let mut req = self.client.post(&url).json(&body);
         if !api_key.is_empty() {
             req = req.header("Authorization", format!("Bearer {}", api_key));

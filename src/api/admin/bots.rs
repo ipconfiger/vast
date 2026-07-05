@@ -344,7 +344,8 @@ pub async fn test_bot(
     let (api_url, api_key, model) = row
         .ok_or_else(|| AppError::NotFound("Bot not found".to_string()))?;
 
-    let url = format!("{}/v1/chat/completions", api_url.trim_end_matches('/'));
+    let base = api_url.trim_end_matches('/').trim_end_matches("/v1");
+    let url = format!("{}/v1/chat/completions", base);
     let body = serde_json::json!({
         "model": model,
         "messages": [{"role": "user", "content": "ping"}],
