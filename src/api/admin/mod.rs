@@ -89,6 +89,7 @@ pub struct AdminUserView {
     pub username: String,
     pub display_name: String,
     pub avatar_url: String,
+    pub is_bot: bool,
     pub created_at: i64,
 }
 
@@ -343,7 +344,7 @@ pub async fn list_users(
 
     let users: Vec<AdminUserView> = if let Some(ref q) = params.q {
         sqlx::query_as::<_, AdminUserView>(
-            "SELECT id, username, display_name, avatar_url, created_at FROM users \
+            "SELECT id, username, display_name, avatar_url, is_bot, created_at FROM users \
              WHERE username LIKE '%' || ? || '%' \
              ORDER BY created_at DESC, id \
              LIMIT ? OFFSET ?",
@@ -355,7 +356,7 @@ pub async fn list_users(
         .await?
     } else {
         sqlx::query_as::<_, AdminUserView>(
-            "SELECT id, username, display_name, avatar_url, created_at FROM users \
+            "SELECT id, username, display_name, avatar_url, is_bot, created_at FROM users \
              ORDER BY created_at DESC, id \
              LIMIT ? OFFSET ?",
         )
@@ -375,7 +376,7 @@ pub async fn get_user(
     Path(id): Path<String>,
 ) -> Result<Json<AdminUserView>, AppError> {
     let user = sqlx::query_as::<_, AdminUserView>(
-        "SELECT id, username, display_name, avatar_url, created_at FROM users WHERE id = ?",
+        "SELECT id, username, display_name, avatar_url, is_bot, created_at FROM users WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&state.pool)
@@ -429,7 +430,7 @@ pub async fn update_user(
     let _ = audit(&state.pool, action, Some("user"), Some(&id), None).await;
 
     let user = sqlx::query_as::<_, AdminUserView>(
-        "SELECT id, username, display_name, avatar_url, created_at FROM users WHERE id = ?",
+        "SELECT id, username, display_name, avatar_url, is_bot, created_at FROM users WHERE id = ?",
     )
     .bind(&id)
     .fetch_one(&state.pool)

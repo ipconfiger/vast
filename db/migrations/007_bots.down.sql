@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS bots;
+ALTER TABLE users DROP COLUMN is_bot;

@@ -61,6 +61,7 @@ pub struct MessageResponse {
     pub sender_name: String,
     pub sender_display_name: String,
     pub sender_avatar_url: String,
+    pub is_bot: bool,
     pub msg_type: String,
     pub payload: serde_json::Value,
     pub thread_parent_id: Option<i64>,
@@ -92,6 +93,7 @@ impl From<MessageRow> for MessageResponse {
             sender_name: row.sender_id,
             sender_display_name: String::new(),
             sender_avatar_url: String::new(),
+            is_bot: false,
             msg_type: row.msg_type,
             payload,
             thread_parent_id: row.thread_parent_id,
@@ -287,9 +289,9 @@ pub async fn send_message(
             );
 
             let mut resp = MessageResponse::from(inserted);
-            let (username, display_name, avatar_url) =
-                sqlx::query_as::<_, (String, String, String)>(
-                    "SELECT username, display_name, avatar_url FROM users WHERE id = ?",
+            let (username, display_name, avatar_url, is_bot) =
+                sqlx::query_as::<_, (String, String, String, bool)>(
+                    "SELECT username, display_name, avatar_url, is_bot FROM users WHERE id = ?",
                 )
                 .bind(&user_id)
                 .fetch_one(&state.pool)
@@ -298,6 +300,7 @@ pub async fn send_message(
             resp.sender_name = username;
             resp.sender_display_name = display_name;
             resp.sender_avatar_url = avatar_url;
+            resp.is_bot = is_bot;
             return Ok((axum::http::StatusCode::CREATED, Json(resp)));
         }
 
@@ -362,8 +365,8 @@ pub async fn send_message(
         .bind(&msg_id).bind(&channel_id).bind(&user_id).bind(&payload_str)
         .fetch_one(&state.pool).await?;
         let mut resp = MessageResponse::from(inserted);
-        let (username, display_name, avatar_url) = sqlx::query_as::<_, (String, String, String)>(
-            "SELECT username, display_name, avatar_url FROM users WHERE id = ?",
+        let (username, display_name, avatar_url, is_bot) = sqlx::query_as::<_, (String, String, String, bool)>(
+            "SELECT username, display_name, avatar_url, is_bot FROM users WHERE id = ?",
         )
         .bind(&user_id)
         .fetch_one(&state.pool)
@@ -372,6 +375,7 @@ pub async fn send_message(
         resp.sender_name = username;
         resp.sender_display_name = display_name;
         resp.sender_avatar_url = avatar_url;
+        resp.is_bot = is_bot;
         return Ok((axum::http::StatusCode::CREATED, Json(resp)));
     }
 
@@ -472,19 +476,19 @@ pub async fn get_messages(
     let has_more = (rows.len() as i64) > limit;
 
     let sender_ids: Vec<String> = rows.iter().map(|r| r.sender_id.clone()).collect();
-    let usernames: HashMap<String, (String, String, String)> = if sender_ids.is_empty() {
+    let usernames: HashMap<String, (String, String, String, bool)> = if sender_ids.is_empty() {
         HashMap::new()
     } else {
         let placeholders: Vec<String> = sender_ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect();
         let query = format!(
-            "SELECT id, username, display_name, avatar_url FROM users WHERE id IN ({})",
+            "SELECT id, username, display_name, avatar_url, is_bot FROM users WHERE id IN ({})",
             placeholders.join(",")
         );
-        let mut q = sqlx::query_as::<_, (String, String, String, String)>(&query);
+        let mut q = sqlx::query_as::<_, (String, String, String, String, bool)>(&query);
         for id in &sender_ids {
             q = q.bind(id);
         }
-        q.fetch_all(&state.pool).await.unwrap_or_default().into_iter().map(|(id, u, d, a)| (id, (u, d, a))).collect()
+        q.fetch_all(&state.pool).await.unwrap_or_default().into_iter().map(|(id, u, d, a, b)| (id, (u, d, a, b))).collect()
     };
 
     let messages: Vec<MessageResponse> = rows
@@ -492,10 +496,11 @@ pub async fn get_messages(
         .take(limit as usize)
         .map(|r| {
             let mut msg = MessageResponse::from(r);
-            if let Some((name, dname, avatar)) = usernames.get(&msg.sender_id) {
+            if let Some((name, dname, avatar, is_bot)) = usernames.get(&msg.sender_id) {
                 msg.sender_name = name.clone();
                 msg.sender_display_name = dname.clone();
                 msg.sender_avatar_url = avatar.clone();
+                msg.is_bot = *is_bot;
             }
             msg
         })
@@ -569,7 +574,7 @@ pub async fn get_thread(
     let has_more = (rows.len() as i64) > limit;
 
     let sender_ids: Vec<String> = rows.iter().map(|r| r.sender_id.clone()).collect();
-    let senders: HashMap<String, (String, String, String)> = if sender_ids.is_empty() {
+    let senders: HashMap<String, (String, String, String, bool)> = if sender_ids.is_empty() {
         HashMap::new()
     } else {
         let placeholders: Vec<String> = sender_ids
@@ -578,10 +583,10 @@ pub async fn get_thread(
             .map(|(i, _)| format!("?{}", i + 1))
             .collect();
         let query = format!(
-            "SELECT id, username, display_name, avatar_url FROM users WHERE id IN ({})",
+            "SELECT id, username, display_name, avatar_url, is_bot FROM users WHERE id IN ({})",
             placeholders.join(",")
         );
-        let mut q = sqlx::query_as::<_, (String, String, String, String)>(&query);
+        let mut q = sqlx::query_as::<_, (String, String, String, String, bool)>(&query);
         for id in &sender_ids {
             q = q.bind(id);
         }
@@ -589,7 +594,7 @@ pub async fn get_thread(
             .await
             .unwrap_or_default()
             .into_iter()
-            .map(|(id, u, d, a)| (id, (u, d, a)))
+            .map(|(id, u, d, a, b)| (id, (u, d, a, b)))
             .collect()
     };
 
@@ -598,10 +603,11 @@ pub async fn get_thread(
         .take(limit as usize)
         .map(|r| {
             let mut msg = MessageResponse::from(r);
-            if let Some((name, dname, avatar)) = senders.get(&msg.sender_id) {
+            if let Some((name, dname, avatar, is_bot)) = senders.get(&msg.sender_id) {
                 msg.sender_name = name.clone();
                 msg.sender_display_name = dname.clone();
                 msg.sender_avatar_url = avatar.clone();
+                msg.is_bot = *is_bot;
             }
             msg
         })
