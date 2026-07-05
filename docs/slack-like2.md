@@ -25,6 +25,9 @@
 | **图标** | `lucide-react` | 轻量、一致的图标库 |
 | **代码片段** | `Monaco Editor` | 提供企业级代码高亮与编辑体验 |
 | **单文件打包** | `rust-embed` | 将前端 `dist` 目录编译进 Rust 二进制 |
+| **AI Bot 集成** | `reqwest` (with `json` feature) | 调用 OpenAI 兼容的 Hermes API，将 AI Agent 作为虚拟频道成员接入 |
+
+> 注：`reqwest` 已在 `Cargo.toml` 中存在，Bot 模块为其启用了 `json` feature。
 
 ---
 
@@ -41,6 +44,7 @@ CREATE TABLE users (
     password_hash TEXT NOT NULL,
     avatar_url TEXT DEFAULT '',              -- 头像 URL（默认空字符串）
     token_epoch INTEGER NOT NULL DEFAULT 0,  -- Token 纪元：递增可强制下线所有旧 JWT
+    is_bot BOOLEAN NOT NULL DEFAULT 0,       -- 是否为 Bot 用户（由 Bot 创建流程置 1）
     created_at INTEGER NOT NULL
 );
 
@@ -124,6 +128,21 @@ CREATE TABLE invitations (
     status TEXT DEFAULT 'pending',        -- pending, accepted, rejected
     created_at INTEGER NOT NULL
 );
+
+-- AI Bot 配置表（管理员创建的 Hermes Agent 实例）
+CREATE TABLE bots (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,                 -- 关联 users.id（创建时同步插入 is_bot=1 的用户记录）
+    name TEXT UNIQUE NOT NULL,             -- @mention 用的唯一标识
+    display_name TEXT NOT NULL,
+    api_url TEXT NOT NULL,                 -- Hermes API 地址（OpenAI 兼容）
+    api_key TEXT NOT NULL,                 -- 调用密钥（仅服务端使用，不外泄）
+    system_prompt TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    is_active BOOLEAN NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
 ```
 
 ---
@@ -176,6 +195,14 @@ CREATE TABLE invitations (
 * **触发**：Owner 调用 `POST /api/channels/{id}/archive`。
 * **后端拦截**：在 Axum 的中间件或业务逻辑层，所有针对该 Channel 的写操作（发消息、删消息、修改成员）必须先查询 `is_archived` 字段。若为 `true`，直接返回 `403 Forbidden`。
 * **前端表现**：UI 顶部出现“该频道已存档，仅供查阅”的横幅，输入框禁用。
+
+#### 5. AI Bot 集成（Hermes Agent）
+将外部 AI Agent（通过 OpenAI 兼容的 Hermes API）以“虚拟频道成员”身份接入频道，实现 @mention 触发的 AI 回复。
+* **创建流程**：管理员通过 `/api/admin/bots` 创建 Bot，后端会同步插入一条 `users.is_bot=1` 的用户记录，并在 `bots` 表写入 API 地址、密钥、System Prompt 等配置。
+* **加入频道**：频道 Owner 在频道设置中通过 `POST /api/channels/{id}/bots` 将 Bot 加为成员。
+* **触发与上下文**：用户在频道中输入 `@bot_name` 或 `@display_name`（大小写不敏感）时，后端异步派发任务，收集该频道的完整消息历史作为上下文，调用 Bot 的 Hermes API（`POST /v1/chat/completions`），并将响应以 Bot 用户身份回写到频道。
+* **链式触发**：Bot 的回复若 @mention 了其他 Bot，会递归触发它们（最大深度 3，每 Bot 每频道 10 秒冷却），实现多 Agent 协作。
+* **公开接口**：`GET /api/bots` 仅返回 `id / name / display_name`，不泄露任何密钥信息。
 
 ---
 

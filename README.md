@@ -15,6 +15,7 @@ A full-featured instant messaging server with a modern React frontend. Built wit
 - **JWT authentication** — register, login, token-based auth
 - **Admin console** — env-configured admin account, user management (disable / force-logout via token epoch), invite code management, dashboard stats, audit logging
 - **Unread message badges** — red count badges on channels and DMs in the sidebar
+- **AI Bot integration** — add Hermes Agent instances as virtual channel members; @mention them by name or display name to get AI-powered responses with full channel context
 - **Token epoch revocation** — disabling a user instantly invalidates all their active JWTs
 - **TLS support** — self-signed and Let's Encrypt modes
 
@@ -122,11 +123,15 @@ vast/
 │   │   ├── requests.rs   #  Join requests
 │   │   ├── invitations.rs#  Invitations
 │   │   ├── presence.rs   #  Presence status
+│   │   ├── bots.rs       #  Admin bot CRUD + test endpoint
 │   │   └── admin/        #  Admin console API (login, users, invites, audit)
 │   ├── auth/             #  Auth module
 │   │   ├── mod.rs        #  JWT + password utilities
 │   │   ├── middleware.rs #  JWT auth middleware
 │   │   └── admin.rs      #  Admin JWT + AdminAuthenticatedUser extractor
+│   ├── bot/              #  Hermes HTTP client module
+│   │   ├── mod.rs
+│   │   └── hermes.rs     #  OpenAI-compatible API client
 │   ├── ws/               #  WebSocket handler
 │   │   ├── mod.rs        #  Connection manager + hub
 │   │   └── protocol.rs   #  WS message protocol
@@ -142,6 +147,7 @@ vast/
 │   │   ├── components/   #  UI components (MessageList, ChannelSidebar, ...)
 │   │   ├── pages/        #  Route pages (Login, Register, Search, DM, ...)
 │   │   │   └── admin/    #  Admin pages (Login, Dashboard, Users, InviteCodes, AuditLogs)
+│   │   │       ├── AdminBotsPage.tsx #  Bot management (create/edit/delete/test)
 │   │   ├── hooks/        #  Custom hooks (useWebSocket, useCursorSync, ...)
 │   │   │   └── useUnreadTracker.ts #  WS new_msg → unread count tracking
 │   │   ├── stores/       #  Zustand stores (auth, channel, message, ...)
@@ -268,6 +274,18 @@ All admin endpoints are prefixed with `/api/admin` and require a separate admin 
 | DELETE | `/api/admin/invite-codes/{code}` | Delete invite code                    |
 | GET    | `/api/admin/audit-logs`       | List audit logs (filterable by action)   |
 
+### Bots
+
+| Method | Path                          | Description                              |
+|--------|-------------------------------|------------------------------------------|
+| GET    | `/api/bots`                   | List active bots (public, no secrets)    |
+| POST   | `/api/admin/bots`             | Create bot (admin only)                  |
+| GET    | `/api/admin/bots`             | List all bots (admin only)               |
+| PATCH  | `/api/admin/bots/:id`         | Update bot config (admin only)           |
+| DELETE | `/api/admin/bots/:id`         | Delete bot (admin only)                  |
+| POST   | `/api/admin/bots/:id/test`    | Test bot API connectivity (admin only)   |
+| POST   | `/api/channels/:id/bots`      | Add bot to channel (owner only)          |
+
 ### WebSocket
 
 Connect to `/ws?token=<jwt_token>` for real-time events:
@@ -365,6 +383,8 @@ make clean
 # Parallel dev servers (backend + hot-reload frontend)
 # make dev sets ADMIN_USERNAME=admin ADMIN_PASSWORD=admin123
 make dev
+
+# Bot feature: admin creates bots, channel owners add them, users @mention
 ```
 
 Benchmarks are available via `scripts/bench.sh` — tests insert throughput, concurrent read latency, and WebSocket memory usage.
