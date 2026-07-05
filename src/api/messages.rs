@@ -5,14 +5,50 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use uuid::Uuid;
 
 use crate::auth::middleware::AuthenticatedUser;
+use crate::bot::hermes::{ChatMessage, HermesClient};
 use crate::db;
 use crate::error::AppError;
 use crate::ws::protocol::ServerEvent;
 use crate::AppState;
+
+// ---------------------------------------------------------------------------
+// Bot mention bridge — process-global cooldown state
+// ---------------------------------------------------------------------------
+
+/// Per-(bot_id, channel_id) last-triggered instant. Process-global so the
+/// cooldown persists across requests without touching `AppState` (which
+/// would force fixture changes throughout the test suite).
+type CooldownKey = (String, String);
+
+static COOLDOWNS: OnceLock<tokio::sync::Mutex<HashMap<CooldownKey, std::time::Instant>>> =
+    OnceLock::new();
+
+fn cooldowns() -> &'static tokio::sync::Mutex<HashMap<CooldownKey, std::time::Instant>> {
+    COOLDOWNS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
+}
+
+/// Minimum seconds between triggers of the same bot in the same channel.
+const BOT_COOLDOWN_SECS: u64 = 10;
+
+/// Hard cap on bot-to-bot chain depth (initial user mention = depth 0).
+const BOT_MAX_CHAIN_DEPTH: u32 = 3;
+
+/// Bot fields needed to call Hermes and post its reply. Bundled into a
+/// struct so `trigger_bot_response` stays under clippy's argument budget.
+#[derive(Debug, Clone)]
+struct BotConfig {
+    id: String,
+    user_id: String,
+    name: String,
+    api_url: String,
+    api_key: String,
+    system_prompt: String,
+    model: String,
+}
 
 // ---------------------------------------------------------------------------
 // Request / Response types
@@ -411,7 +447,7 @@ pub async fn send_message(
                 channel_id: channel_id.clone(),
                 thread_parent_cursor: parent_id,
                 cursor: inserted.id,
-                sender_id: user_id,
+                sender_id: user_id.clone(),
                 preview,
             },
         );
@@ -421,12 +457,14 @@ pub async fn send_message(
             ServerEvent::NewMsg {
                 channel_id: channel_id.clone(),
                 cursor: inserted.id,
-                sender_id: user_id,
-                msg_type: body.msg_type,
+                sender_id: user_id.clone(),
+                msg_type: body.msg_type.clone(),
                 preview,
             },
         );
     }
+
+    spawn_bot_mentions(&state, &channel_id, &body.payload).await;
 
     Ok((axum::http::StatusCode::CREATED, Json(inserted.into())))
 }
@@ -666,6 +704,254 @@ pub async fn delete_message(
     );
 
     Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------------
+// Bot mention bridge
+// ---------------------------------------------------------------------------
+
+/// Detect `@botname` mentions in a freshly-inserted message and trigger
+/// each matching channel-member bot. Async-spawned so the request handler
+/// never blocks on the Hermes round-trip.
+async fn spawn_bot_mentions(
+    state: &Arc<AppState>,
+    channel_id: &str,
+    payload: &serde_json::Value,
+) {
+    let content_text = payload
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if content_text.is_empty() {
+        return;
+    }
+
+    let bots: Vec<(String, String, String, String, String, String, String)> =
+        sqlx::query_as(
+            "SELECT b.id, b.user_id, b.name, b.api_url, b.api_key, b.system_prompt, b.model
+             FROM bots b
+             JOIN channel_members cm ON cm.user_id = b.user_id AND cm.channel_id = ?
+             WHERE b.is_active = 1",
+        )
+        .bind(channel_id)
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_default();
+
+    let pool = state.pool.clone();
+    let ws_pool = state.ws_pool.clone();
+
+    for (bot_id, bot_user_id, bot_name, api_url, api_key, system_prompt, model) in bots {
+        let mention = format!("@{}", bot_name.to_lowercase());
+        if !content_text.contains(&mention) {
+            continue;
+        }
+
+        // Atomic cooldown check-and-set BEFORE spawn to prevent
+        // two simultaneous mentions of the same bot both passing.
+        let mut cd = cooldowns().lock().await;
+        let key = (bot_id.clone(), channel_id.to_string());
+        if let Some(last) = cd.get(&key)
+            && last.elapsed().as_secs() < BOT_COOLDOWN_SECS
+        {
+            continue;
+        }
+        cd.insert(key, std::time::Instant::now());
+        drop(cd);
+
+        let bot = BotConfig {
+            id: bot_id,
+            user_id: bot_user_id,
+            name: bot_name,
+            api_url,
+            api_key,
+            system_prompt,
+            model,
+        };
+        let pool_clone = pool.clone();
+        let ws_pool_clone = ws_pool.clone();
+        let channel_id_clone = channel_id.to_string();
+
+        tokio::spawn(async move {
+            trigger_bot_response(pool_clone, ws_pool_clone, bot, channel_id_clone, 0).await;
+        });
+    }
+}
+
+/// Gather channel history, call Hermes, post the bot's reply (or error).
+/// Recursively triggers bots mentioned in the response, capped at
+/// `BOT_MAX_CHAIN_DEPTH`.
+///
+/// Returns early at the depth cap; swallows all internal errors to keep
+/// the spawned task from panicking the runtime.
+async fn trigger_bot_response(
+    pool: sqlx::SqlitePool,
+    ws_pool: Arc<crate::ws::ConnectionPool>,
+    bot: BotConfig,
+    channel_id: String,
+    depth: u32,
+) {
+    if depth >= BOT_MAX_CHAIN_DEPTH {
+        return;
+    }
+
+    let rows: Vec<(String, String, String, bool)> = sqlx::query_as(
+        "SELECT m.sender_id, m.payload, u.username, u.is_bot
+         FROM messages m JOIN users u ON m.sender_id = u.id
+         WHERE m.channel_id = ? AND m.deleted_at IS NULL
+         ORDER BY m.created_at ASC",
+    )
+    .bind(&channel_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap_or_default();
+
+    let messages: Vec<ChatMessage> = rows
+        .into_iter()
+        .map(|(_sender_id, payload, username, is_bot)| {
+            let role = if is_bot { "assistant" } else { "user" };
+            let text = serde_json::from_str::<serde_json::Value>(&payload)
+                .ok()
+                .and_then(|v| v.get("text").and_then(|t| t.as_str()).map(String::from))
+                .unwrap_or_default();
+            ChatMessage {
+                role: role.to_string(),
+                content: format!("{}: {}", username, text),
+            }
+        })
+        .collect();
+
+    let result = HermesClient::new()
+        .chat(
+            &bot.api_url,
+            &bot.api_key,
+            &bot.model,
+            &bot.system_prompt,
+            &channel_id,
+            messages,
+        )
+        .await;
+
+    match result {
+        Ok(segments) => {
+            for segment in segments {
+                let Some(inserted_id) =
+                    insert_bot_message(&pool, &channel_id, &bot.user_id, &segment).await
+                else {
+                    continue;
+                };
+                ws_pool.notify_channel(
+                    &channel_id,
+                    ServerEvent::NewMsg {
+                        channel_id: channel_id.clone(),
+                        cursor: inserted_id,
+                        sender_id: bot.user_id.clone(),
+                        msg_type: "text".to_string(),
+                        preview: segment.chars().take(100).collect(),
+                    },
+                );
+                trigger_chain_mentions(&pool, &ws_pool, &channel_id, &bot.id, &segment, depth)
+                    .await;
+            }
+        }
+        Err(_) => {
+            let error_text = format!("⚠️ {} 暂时不可用", bot.name);
+            if let Some(inserted_id) =
+                insert_bot_message(&pool, &channel_id, &bot.user_id, &error_text).await
+            {
+                ws_pool.notify_channel(
+                    &channel_id,
+                    ServerEvent::NewMsg {
+                        channel_id: channel_id.clone(),
+                        cursor: inserted_id,
+                        sender_id: bot.user_id.clone(),
+                        msg_type: "text".to_string(),
+                        preview: error_text,
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// Inspect a bot's reply segment for `@other_bot` mentions and trigger
+/// any that pass the cooldown check, with `depth + 1`.
+async fn trigger_chain_mentions(
+    pool: &sqlx::SqlitePool,
+    ws_pool: &Arc<crate::ws::ConnectionPool>,
+    channel_id: &str,
+    src_bot_id: &str,
+    segment: &str,
+    depth: u32,
+) {
+    if depth + 1 >= BOT_MAX_CHAIN_DEPTH {
+        return;
+    }
+    let segment_lower = segment.to_lowercase();
+
+    let other_bots: Vec<(String, String, String, String, String, String, String)> =
+        sqlx::query_as(
+            "SELECT b.id, b.user_id, b.name, b.api_url, b.api_key, b.system_prompt, b.model
+             FROM bots b
+             JOIN channel_members cm ON cm.user_id = b.user_id AND cm.channel_id = ?
+             WHERE b.is_active = 1 AND b.id != ?",
+        )
+        .bind(channel_id)
+        .bind(src_bot_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+    for (id, user_id, name, api_url, api_key, system_prompt, model) in other_bots {
+        let mention = format!("@{}", name.to_lowercase());
+        if !segment_lower.contains(&mention) {
+            continue;
+        }
+
+        let mut cd = cooldowns().lock().await;
+        let key = (id.clone(), channel_id.to_string());
+        if let Some(last) = cd.get(&key)
+            && last.elapsed().as_secs() < BOT_COOLDOWN_SECS
+        {
+            continue;
+        }
+        cd.insert(key, std::time::Instant::now());
+        drop(cd);
+
+        let other = BotConfig { id, user_id, name, api_url, api_key, system_prompt, model };
+        Box::pin(trigger_bot_response(
+            pool.clone(),
+            ws_pool.clone(),
+            other,
+            channel_id.to_string(),
+            depth + 1,
+        ))
+        .await;
+    }
+}
+
+/// Insert a bot-sent message and return its autoincrement id (the cursor
+/// used in `ServerEvent::NewMsg`). Returns `None` on DB error.
+async fn insert_bot_message(
+    pool: &sqlx::SqlitePool,
+    channel_id: &str,
+    bot_user_id: &str,
+    text: &str,
+) -> Option<i64> {
+    let msg_id = Uuid::new_v4().to_string();
+    let payload = serde_json::json!({"text": text}).to_string();
+    sqlx::query_scalar::<_, i64>(
+        "INSERT INTO messages (msg_id, channel_id, sender_id, msg_type, payload)
+         VALUES (?, ?, ?, 'text', ?) RETURNING id",
+    )
+    .bind(&msg_id)
+    .bind(channel_id)
+    .bind(bot_user_id)
+    .bind(&payload)
+    .fetch_one(pool)
+    .await
+    .ok()
 }
 
 /// Hosts the raw-proxy is allowed to fetch from. SSRF defense: any host not
@@ -1402,5 +1688,308 @@ mod tests {
         assert_eq!(messages[0]["sender_name"], orphan_sender);
         assert_eq!(messages[0]["sender_display_name"], "");
         let _ = owner_id;
+    }
+
+    // ── Bot mention bridge ──────────────────────────────────────────
+
+    /// Insert a bot user + bots row + channel membership for tests.
+    /// `api_url` defaults to an unreachable port so the Hermes call fails
+    /// fast (exercising the error path).
+    async fn create_test_bot(
+        pool: &sqlx::SqlitePool,
+        channel_id: &str,
+        name: &str,
+        api_url: &str,
+    ) -> String {
+        let user_id = Uuid::new_v4().to_string();
+        let bot_id = Uuid::new_v4().to_string();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, is_bot) VALUES (?, ?, '', 1)",
+        )
+        .bind(&user_id)
+        .bind(name)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO bots (id, user_id, name, display_name, api_url, api_key, \
+             system_prompt, model, is_active, created_at) \
+             VALUES (?, ?, ?, '', ?, '', '', 'hermes', 1, ?)",
+        )
+        .bind(&bot_id)
+        .bind(&user_id)
+        .bind(name)
+        .bind(api_url)
+        .bind(now)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        sqlx::query("INSERT INTO channel_members (channel_id, user_id, role) VALUES (?, ?, 'member')")
+            .bind(channel_id)
+            .bind(&user_id)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        bot_id
+    }
+
+    /// Resolve the bot user id from a bot_id.
+    async fn bot_user_id(pool: &sqlx::SqlitePool, bot_id: &str) -> String {
+        sqlx::query_scalar::<_, String>("SELECT user_id FROM bots WHERE id = ?")
+            .bind(bot_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// Poll the DB until the bot has posted a reply (or timeout).
+    /// Returns the bot's message text, or `None` on timeout.
+    async fn wait_for_bot_reply(
+        pool: &sqlx::SqlitePool,
+        channel_id: &str,
+        bot_user_id: &str,
+        timeout_ms: u64,
+    ) -> Option<String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        while std::time::Instant::now() < deadline {
+            let row: Option<(String,)> = sqlx::query_as(
+                "SELECT m.payload FROM messages m \
+                 WHERE m.channel_id = ? AND m.sender_id = ? AND m.deleted_at IS NULL \
+                 ORDER BY m.id DESC LIMIT 1",
+            )
+            .bind(channel_id)
+            .bind(bot_user_id)
+            .fetch_optional(pool)
+            .await
+            .ok()?;
+            if let Some((payload,)) = row {
+                let v: serde_json::Value = serde_json::from_str(&payload).unwrap_or_default();
+                if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
+                    return Some(text.to_string());
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        None
+    }
+
+    /// Given: a channel with an active bot whose `api_url` points at an
+    ///        unreachable port (Hermes call fails fast).
+    /// When:  a member posts `@botname hello`.
+    /// Then:  the bot posts a "⚠️ ... 暂时不可用" reply.
+    #[tokio::test]
+    async fn test_mention_triggers_bot_error_reply() {
+        let (mut app, pool, _, token, _) = setup().await;
+        let channel_id = create_channel(&mut app, &token).await;
+        let bot_id = create_test_bot(&pool, &channel_id, "hermes", "http://127.0.0.1:1").await;
+        let bot_uid = bot_user_id(&pool, &bot_id).await;
+
+        let resp = request(
+            &mut app,
+            Method::POST,
+            &format!("/channels/{}/messages", channel_id),
+            Some(json!({"msg_type": "text", "payload": {"text": "@hermes please reply"}})),
+            &token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let reply = wait_for_bot_reply(&pool, &channel_id, &bot_uid, 5000)
+            .await
+            .expect("bot should have posted an error reply");
+        assert!(reply.contains("暂时不可用"), "got: {reply}");
+        assert!(reply.contains("hermes"), "got: {reply}");
+    }
+
+    /// Given: a channel with an active bot.
+    /// When:  a member posts a message WITHOUT mentioning the bot.
+    /// Then:  no bot reply appears within a short window.
+    #[tokio::test]
+    async fn test_no_mention_does_not_trigger_bot() {
+        let (mut app, pool, _, token, _) = setup().await;
+        let channel_id = create_channel(&mut app, &token).await;
+        let bot_id = create_test_bot(&pool, &channel_id, "hermes", "http://127.0.0.1:1").await;
+        let bot_uid = bot_user_id(&pool, &bot_id).await;
+
+        let resp = request(
+            &mut app,
+            Method::POST,
+            &format!("/channels/{}/messages", channel_id),
+            Some(json!({"msg_type": "text", "payload": {"text": "just chatting, no mention"}})),
+            &token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let reply = wait_for_bot_reply(&pool, &channel_id, &bot_uid, 500).await;
+        assert!(reply.is_none(), "no bot reply expected, got: {reply:?}");
+    }
+
+    /// Given: a channel with an active bot.
+    /// When:  the same user mentions the bot twice in rapid succession.
+    /// Then:  only the first mention triggers a reply (10s cooldown).
+    #[tokio::test]
+    async fn test_cooldown_blocks_rapid_re_trigger() {
+        let (mut app, pool, _, token, _) = setup().await;
+        let channel_id = create_channel(&mut app, &token).await;
+        let bot_id = create_test_bot(&pool, &channel_id, "hermes", "http://127.0.0.1:1").await;
+        let bot_uid = bot_user_id(&pool, &bot_id).await;
+
+        for i in 0..2 {
+            let resp = request(
+                &mut app,
+                Method::POST,
+                &format!("/channels/{}/messages", channel_id),
+                Some(json!({"msg_type": "text", "payload": {"text": format!("@hermes attempt {}", i)}})),
+                &token,
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::CREATED);
+        }
+
+        // Wait for the first reply to land.
+        let first = wait_for_bot_reply(&pool, &channel_id, &bot_uid, 5000)
+            .await
+            .expect("first mention should trigger");
+        assert!(first.contains("暂时不可用"));
+
+        // Drain; then give the second mention a window to (not) produce a reply.
+        // Count total bot messages — should stay at 1.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM messages WHERE channel_id = ? AND sender_id = ? AND deleted_at IS NULL",
+        )
+        .bind(&channel_id)
+        .bind(&bot_uid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1, "cooldown should have suppressed the second trigger");
+    }
+
+    /// Given: trigger_bot_response is called with `depth >= BOT_MAX_CHAIN_DEPTH`.
+    /// When:  invoked directly with a maxed-out depth.
+    /// Then:  it returns immediately without inserting any bot message.
+    #[tokio::test]
+    async fn test_chain_depth_limit_short_circuits() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("db/migrations").run(&pool).await.unwrap();
+
+        let bot_user_id = Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO users (id, username, password_hash, is_bot) VALUES (?, 'b', '', 1)")
+            .bind(&bot_user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let channel_id = Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO channels (id, name, owner_id) VALUES (?, 'c', ?)")
+            .bind(&channel_id)
+            .bind(&bot_user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let ws_pool = Arc::new(crate::ws::ConnectionPool::new());
+        let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        let bot = BotConfig {
+            id: "bot-id".to_string(),
+            user_id: bot_user_id.clone(),
+            name: "name".to_string(),
+            api_url: "http://127.0.0.1:1".to_string(),
+            api_key: String::new(),
+            system_prompt: String::new(),
+            model: "hermes".to_string(),
+        };
+        trigger_bot_response(pool.clone(), ws_pool, bot, channel_id, BOT_MAX_CHAIN_DEPTH).await;
+
+        let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(before, after, "depth-capped call must not insert anything");
+    }
+
+    /// Given: an inactive bot is a channel member.
+    /// When:  a user @mentions it.
+    /// Then:  no bot reply appears (the WHERE is_active = 1 filter excludes it).
+    #[tokio::test]
+    async fn test_inactive_bot_is_not_triggered() {
+        let (mut app, pool, _, token, _) = setup().await;
+        let channel_id = create_channel(&mut app, &token).await;
+        let bot_id = create_test_bot(&pool, &channel_id, "hermes", "http://127.0.0.1:1").await;
+        let bot_uid = bot_user_id(&pool, &bot_id).await;
+
+        sqlx::query("UPDATE bots SET is_active = 0 WHERE id = ?")
+            .bind(&bot_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let resp = request(
+            &mut app,
+            Method::POST,
+            &format!("/channels/{}/messages", channel_id),
+            Some(json!({"msg_type": "text", "payload": {"text": "@hermes ping"}})),
+            &token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let reply = wait_for_bot_reply(&pool, &channel_id, &bot_uid, 500).await;
+        assert!(reply.is_none(), "inactive bot must not be triggered");
+    }
+
+    /// Given: a bot is NOT a channel member.
+    /// When:  a user @mentions it.
+    /// Then:  no bot reply appears (the channel_members JOIN excludes it).
+    #[tokio::test]
+    async fn test_non_member_bot_is_not_triggered() {
+        let (mut app, pool, _, token, _) = setup().await;
+        let channel_id = create_channel(&mut app, &token).await;
+        // Create the bot but skip the channel_members insert.
+        let user_id = Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO users (id, username, password_hash, is_bot) VALUES (?, 'hermes', '', 1)")
+            .bind(&user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        sqlx::query(
+            "INSERT INTO bots (id, user_id, name, api_url, model, is_active, created_at) \
+             VALUES ('b1', ?, 'hermes', 'http://127.0.0.1:1', 'hermes', 1, ?)",
+        )
+        .bind(&user_id)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let resp = request(
+            &mut app,
+            Method::POST,
+            &format!("/channels/{}/messages", channel_id),
+            Some(json!({"msg_type": "text", "payload": {"text": "@hermes outsider"}})),
+            &token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let reply = wait_for_bot_reply(&pool, &channel_id, &user_id, 500).await;
+        assert!(reply.is_none(), "non-member bot must not be triggered");
     }
 }
