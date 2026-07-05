@@ -11,6 +11,9 @@ pub enum ServerEvent {
         msg_type: String,
         preview: String,
     },
+    MsgUpdated {
+        channel_id: String,
+    },
     MsgDeleted {
         channel_id: String,
         cursor: i64,

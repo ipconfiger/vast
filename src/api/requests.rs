@@ -262,6 +262,13 @@ pub async fn approve_join_request(
     .execute(&state.pool)
     .await?;
 
+    state.ws_pool.notify_channel(
+        &channel_id,
+        ServerEvent::MsgUpdated {
+            channel_id: channel_id.clone(),
+        },
+    );
+
     Ok((StatusCode::OK, Json(serde_json::json!({"status": "approved", "request_id": request_id}))))
 }
 
@@ -285,7 +292,7 @@ pub async fn reject_join_request(
     .await?
     .ok_or_else(|| AppError::NotFound("Join request not found".to_string()))?;
 
-    let (_, channel_id, _, status) = row;
+    let (_, channel_id, requester_id, status) = row;
 
     // Check user is owner or admin of the channel
     require_role(&state.pool, &user.0, &channel_id, &["owner", "admin"]).await?;
@@ -303,6 +310,35 @@ pub async fn reject_join_request(
         .bind(&request_id)
         .execute(&state.pool)
         .await?;
+
+    let username = sqlx::query_scalar::<_, String>("SELECT username FROM users WHERE id = ?")
+        .bind(&requester_id)
+        .fetch_one(&state.pool)
+        .await
+        .unwrap_or_else(|_| "Unknown".to_string());
+
+    let msg_payload = serde_json::json!({
+        "request_id": &request_id,
+        "status": "rejected",
+        "_join_request": true,
+        "username": &username
+    });
+    sqlx::query(
+        "UPDATE messages SET payload = ? WHERE msg_type = 'text' AND sender_id = ? AND channel_id = ? AND payload LIKE ?",
+    )
+    .bind(serde_json::to_string(&msg_payload).unwrap_or_default())
+    .bind(&requester_id)
+    .bind(&channel_id)
+    .bind(format!("%{}%", &request_id))
+    .execute(&state.pool)
+    .await?;
+
+    state.ws_pool.notify_channel(
+        &channel_id,
+        ServerEvent::MsgUpdated {
+            channel_id: channel_id.clone(),
+        },
+    );
 
     Ok((StatusCode::OK, Json(serde_json::json!({"status": "rejected", "request_id": request_id}))))
 }
