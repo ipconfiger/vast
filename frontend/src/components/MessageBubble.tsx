@@ -1,5 +1,5 @@
 import type { Message } from '../types'
-import { FileText, Download, Check, X, UserPlus, Loader2 } from 'lucide-react'
+import { FileText, Download, Check, X, UserPlus, Loader2, Bot } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../api/client'
 import { useAuthImage } from '../hooks/useAuthImage'
@@ -9,6 +9,7 @@ import { ReactionPicker } from './ReactionPicker'
 import { ReactionBar } from './ReactionBar'
 import { TrainMessage } from './TrainMessage'
 import { VoteMessage } from './VoteMessage'
+import { UserAvatar } from './UserAvatar'
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return bytes + ' B'
@@ -174,24 +175,29 @@ export function MessageBubble({
   timestamp,
   channelId,
 }: MessageBubbleProps) {
-  const senderAvatarSrc = useAuthImage(senderAvatar)
+  const isBotMsg = message.is_bot === true && !isOwn
+
   const renderContent = () => {
     if (message.payload?._train) {
       return (
-        <TrainMessage
-          trainId={message.payload.train_id}
-          title={message.payload.title}
-          channelId={message.channel_id}
-        />
+        <div className={isOwn ? 'flex justify-end' : ''}>
+          <TrainMessage
+            trainId={message.payload.train_id}
+            title={message.payload.title}
+            channelId={message.channel_id}
+          />
+        </div>
       )
     }
     if (message.payload?._vote) {
       return (
-        <VoteMessage
-          voteId={message.payload.vote_id}
-          title={message.payload.title}
-          channelId={message.channel_id}
-        />
+        <div className={isOwn ? 'flex justify-end' : ''}>
+          <VoteMessage
+            voteId={message.payload.vote_id}
+            title={message.payload.title}
+            channelId={message.channel_id}
+          />
+        </div>
       )
     }
     switch (message.msg_type) {
@@ -215,26 +221,33 @@ export function MessageBubble({
   }
 
   return (
-    <div className={`message-bubble group flex gap-3 px-4 py-2 hover:bg-zinc-800/30 ${isOwn ? 'flex-row-reverse' : ''}`}>
+    <div className={`message-bubble group flex gap-3 px-4 py-2 hover:bg-zinc-800/30 ${
+      isOwn
+        ? 'flex-row-reverse'
+        : isBotMsg
+          ? 'bg-indigo-950/30 border-l-2 border-indigo-500/40'
+          : ''
+    }`}>
       {!isOwn && (
         <div className="flex-shrink-0 pt-0.5">
-          {senderAvatarSrc ? (
-            <img
-              src={senderAvatarSrc}
-              alt={senderName}
-              className="h-9 w-9 rounded-md object-cover"
-            />
-          ) : (
-            <div className="flex h-9 w-9 items-center justify-center rounded-md bg-zinc-700 text-sm font-semibold text-zinc-300">
-              {senderName.charAt(0).toUpperCase()}
-            </div>
-          )}
+          <UserAvatar
+            avatarUrl={senderAvatar}
+            displayName={senderName}
+            size="sm"
+            rounded="md"
+          />
         </div>
       )}
       <div className={`min-w-0 ${isOwn ? 'flex-1' : 'flex-1'}`}>
         <div className={`flex items-center gap-2 ${isOwn ? 'flex-row-reverse' : ''}`}>
           <div className="flex items-baseline gap-2 min-w-0">
-            <span className="font-semibold text-sm text-zinc-200">
+            {isBotMsg && (
+              <Bot
+                className="h-3.5 w-3.5 text-indigo-400 flex-shrink-0 self-center"
+                aria-label="Bot"
+              />
+            )}
+            <span className={`font-semibold text-sm ${isBotMsg ? 'text-indigo-400' : 'text-zinc-200'}`}>
               {senderName}
             </span>
             <span className="text-xs text-zinc-500 opacity-0 group-hover:opacity-100 transition-opacity">

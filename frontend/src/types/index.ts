@@ -35,6 +35,7 @@ export interface Message {
   sender_name?: string
   sender_display_name?: string
   sender_avatar_url?: string
+  is_bot?: boolean
   msg_type: string
   payload: any
   thread_parent_id?: string | null
@@ -89,6 +90,7 @@ export interface TrainReply {
   user_id: string
   username: string
   display_name?: string | null
+  avatar_url?: string | null
   content: string
   created_at: number
 }
