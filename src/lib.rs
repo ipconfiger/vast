@@ -129,16 +129,20 @@ pub fn api_routes() -> Router<Arc<AppState>> {
             get(api::channels::discover_channels),
         )
         .route(
-            "/channels/{id}",
-            get(api::channels::get_channel).patch(api::channels::update_channel),
-        )
-        .route(
             "/channels/{id}/archive",
             post(api::channels::archive_channel),
         )
         .route(
             "/channels/{id}/unarchive",
             post(api::channels::unarchive_channel),
+        )
+        .route(
+            "/channels/{channel_id}/bots",
+            post(api::channels::add_bot_to_channel),
+        )
+        .route(
+            "/channels/{id}",
+            get(api::channels::get_channel).patch(api::channels::update_channel),
         )
         .route(
             "/channels/{channel_id}/messages",

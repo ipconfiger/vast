@@ -56,6 +56,11 @@ pub struct UpdateChannelRequest {
     pub description: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AddBotRequest {
+    pub bot_id: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ChannelListResponse {
     pub channels: Vec<ChannelWithRole>,
@@ -370,6 +375,70 @@ pub async fn unarchive_channel(
         .broadcast_to_channel(&id, &crate::ws::protocol::ServerEvent::ChannelUnarchived { channel_id });
 
     Ok(StatusCode::OK)
+}
+
+/// POST /api/channels/{id}/bots
+///
+/// Add a bot to a channel. Requires owner or admin role.
+/// Verifies bot exists and is active, checks for duplicates, inserts into channel_members,
+/// and broadcasts MemberAdded via WebSocket.
+pub async fn add_bot_to_channel(
+    State(state): State<Arc<AppState>>,
+    user: AuthenticatedUser,
+    Path(channel_id): Path<String>,
+    Json(req): Json<AddBotRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    crate::auth::middleware::require_role(&state.pool, &user.0, &channel_id, &["owner", "admin"]).await?;
+
+    let bot_info: Option<(String, String, bool)> = sqlx::query_as(
+        "SELECT user_id, name, is_active FROM bots WHERE id = ?",
+    )
+    .bind(&req.bot_id)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    let (bot_user_id, bot_name, is_active) = bot_info.ok_or_else(|| {
+        AppError::NotFound("Bot not found".to_string())
+    })?;
+
+    if !is_active {
+        return Err(AppError::BadRequest(
+            "Bot is not active".to_string(),
+        ));
+    }
+
+    let is_member: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM channel_members WHERE channel_id = ? AND user_id = ?",
+    )
+    .bind(&channel_id)
+    .bind(&bot_user_id)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    if is_member.is_some() {
+        return Err(AppError::Conflict("Bot is already a member of this channel".to_string()));
+    }
+
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO channel_members (channel_id, user_id, role, joined_at) VALUES (?, ?, 'member', ?)",
+    )
+    .bind(&channel_id)
+    .bind(&bot_user_id)
+    .bind(now)
+    .execute(&state.pool)
+    .await?;
+
+    state.ws_pool.notify_channel(
+        &channel_id,
+        crate::ws::protocol::ServerEvent::MemberAdded {
+            channel_id: channel_id.clone(),
+            user_id: bot_user_id.clone(),
+            username: bot_name.clone(),
+        },
+    );
+
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 // ---------------------------------------------------------------------------
@@ -1290,5 +1359,298 @@ mod tests {
         .unwrap();
         let channels = list_body["channels"].as_array().unwrap();
         assert!(channels.iter().any(|c| c["id"] == channel_id));
+    }
+
+    // ── Add Bot to Channel ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_add_bot_to_channel_success() {
+        let (mut app, pool, _owner_id, token) = setup().await;
+
+        let create_resp = request(
+            &mut app,
+            Method::POST,
+            "/channels",
+            Some(json!({"name": "Bot Test Channel"})),
+            &token,
+        )
+        .await;
+        let create_body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(create_resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let channel_id = create_body["id"].as_str().unwrap().to_string();
+
+        let bot_user_id = Uuid::new_v4().to_string();
+        let password_hash = crate::auth::hash_password("botpass").expect("Failed to hash password");
+        sqlx::query("INSERT INTO users (id, username, password_hash, is_bot) VALUES (?, ?, ?, 1)")
+            .bind(&bot_user_id)
+            .bind("testbot")
+            .bind(&password_hash)
+            .execute(&pool)
+            .await
+            .expect("Failed to insert bot user");
+
+        let bot_id = Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().timestamp();
+        sqlx::query("INSERT INTO bots (id, user_id, name, display_name, api_url, is_active, created_at) VALUES (?, ?, ?, '', ?, 1, ?)")
+            .bind(&bot_id)
+            .bind(&bot_user_id)
+            .bind("TestBot")
+            .bind("https://example.com/bot")
+            .bind(now)
+            .execute(&pool)
+            .await
+            .expect("Failed to insert bot");
+
+        let resp = request(
+            &mut app,
+            Method::POST,
+            &format!("/channels/{}/bots", channel_id),
+            Some(json!({"bot_id": &bot_id})),
+            &token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["ok"], true);
+
+        let member_role: Option<String> = sqlx::query_scalar(
+            "SELECT role FROM channel_members WHERE channel_id = ? AND user_id = ?",
+        )
+        .bind(&channel_id)
+        .bind(&bot_user_id)
+        .fetch_optional(&pool)
+        .await
+        .expect("Failed to query channel_members");
+        assert_eq!(member_role, Some("member".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_add_bot_non_owner_forbidden() {
+        let (mut app, pool, _owner_id, owner_token) = setup().await;
+
+        let create_resp = request(
+            &mut app,
+            Method::POST,
+            "/channels",
+            Some(json!({"name": "Non-Owner Channel"})),
+            &owner_token,
+        )
+        .await;
+        let create_body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(create_resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let channel_id = create_body["id"].as_str().unwrap().to_string();
+
+        let user_id = Uuid::new_v4().to_string();
+        let password_hash = crate::auth::hash_password("userpass").expect("Failed to hash password");
+        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)")
+            .bind(&user_id)
+            .bind("regularuser")
+            .bind(&password_hash)
+            .execute(&pool)
+            .await
+            .expect("Failed to insert user");
+
+        let bot_user_id = Uuid::new_v4().to_string();
+        let bot_password_hash = crate::auth::hash_password("botpass").expect("Failed to hash password");
+        sqlx::query("INSERT INTO users (id, username, password_hash, is_bot) VALUES (?, ?, ?, 1)")
+            .bind(&bot_user_id)
+            .bind("testbot2")
+            .bind(&bot_password_hash)
+            .execute(&pool)
+            .await
+            .expect("Failed to insert bot user");
+
+        let bot_id = Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().timestamp();
+        sqlx::query("INSERT INTO bots (id, user_id, name, display_name, api_url, is_active, created_at) VALUES (?, ?, ?, '', ?, 1, ?)")
+            .bind(&bot_id)
+            .bind(&bot_user_id)
+            .bind("TestBot2")
+            .bind("https://example.com/bot2")
+            .bind(now)
+            .execute(&pool)
+            .await
+            .expect("Failed to insert bot");
+
+        sqlx::query("INSERT INTO channel_members (channel_id, user_id, role) VALUES (?, ?, 'member')")
+            .bind(&channel_id)
+            .bind(&user_id)
+            .execute(&pool)
+            .await
+            .expect("Failed to add user to channel");
+
+        let secret = "test-secret";
+        let user_token = crate::auth::create_token_pair(&user_id, secret, 0)
+            .expect("Failed to create token")
+            .access_token;
+
+        let resp = request(
+            &mut app,
+            Method::POST,
+            &format!("/channels/{}/bots", channel_id),
+            Some(json!({"bot_id": &bot_id})),
+            &user_token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_add_bot_already_member_conflict() {
+        let (mut app, pool, _owner_id, token) = setup().await;
+
+        let create_resp = request(
+            &mut app,
+            Method::POST,
+            "/channels",
+            Some(json!({"name": "Duplicate Bot Channel"})),
+            &token,
+        )
+        .await;
+        let create_body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(create_resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let channel_id = create_body["id"].as_str().unwrap().to_string();
+
+        let bot_user_id = Uuid::new_v4().to_string();
+        let password_hash = crate::auth::hash_password("botpass").expect("Failed to hash password");
+        sqlx::query("INSERT INTO users (id, username, password_hash, is_bot) VALUES (?, ?, ?, 1)")
+            .bind(&bot_user_id)
+            .bind("testbot3")
+            .bind(&password_hash)
+            .execute(&pool)
+            .await
+            .expect("Failed to insert bot user");
+
+        let bot_id = Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().timestamp();
+        sqlx::query("INSERT INTO bots (id, user_id, name, display_name, api_url, is_active, created_at) VALUES (?, ?, ?, '', ?, 1, ?)")
+            .bind(&bot_id)
+            .bind(&bot_user_id)
+            .bind("TestBot3")
+            .bind("https://example.com/bot3")
+            .bind(now)
+            .execute(&pool)
+            .await
+            .expect("Failed to insert bot");
+
+        sqlx::query("INSERT INTO channel_members (channel_id, user_id, role) VALUES (?, ?, 'member')")
+            .bind(&channel_id)
+            .bind(&bot_user_id)
+            .execute(&pool)
+            .await
+            .expect("Failed to add bot to channel");
+
+        let resp = request(
+            &mut app,
+            Method::POST,
+            &format!("/channels/{}/bots", channel_id),
+            Some(json!({"bot_id": &bot_id})),
+            &token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn test_add_bot_not_found() {
+        let (mut app, _, _, token) = setup().await;
+
+        let create_resp = request(
+            &mut app,
+            Method::POST,
+            "/channels",
+            Some(json!({"name": "Non-Existent Bot Channel"})),
+            &token,
+        )
+        .await;
+        let create_body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(create_resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let channel_id = create_body["id"].as_str().unwrap().to_string();
+
+        let fake_bot_id = Uuid::new_v4().to_string();
+        let resp = request(
+            &mut app,
+            Method::POST,
+            &format!("/channels/{}/bots", channel_id),
+            Some(json!({"bot_id": fake_bot_id})),
+            &token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_add_bot_inactive_bad_request() {
+        let (mut app, pool, _owner_id, token) = setup().await;
+
+        let create_resp = request(
+            &mut app,
+            Method::POST,
+            "/channels",
+            Some(json!({"name": "Inactive Bot Channel"})),
+            &token,
+        )
+        .await;
+        let create_body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(create_resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let channel_id = create_body["id"].as_str().unwrap().to_string();
+
+        let bot_user_id = Uuid::new_v4().to_string();
+        let password_hash = crate::auth::hash_password("botpass").expect("Failed to hash password");
+        sqlx::query("INSERT INTO users (id, username, password_hash, is_bot) VALUES (?, ?, ?, 1)")
+            .bind(&bot_user_id)
+            .bind("testbot4")
+            .bind(&password_hash)
+            .execute(&pool)
+            .await
+            .expect("Failed to insert bot user");
+
+        let bot_id = Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().timestamp();
+        sqlx::query("INSERT INTO bots (id, user_id, name, display_name, api_url, is_active, created_at) VALUES (?, ?, ?, '', ?, 0, ?)")
+            .bind(&bot_id)
+            .bind(&bot_user_id)
+            .bind("TestBot4")
+            .bind("https://example.com/bot4")
+            .bind(now)
+            .execute(&pool)
+            .await
+            .expect("Failed to insert bot");
+
+        let resp = request(
+            &mut app,
+            Method::POST,
+            &format!("/channels/{}/bots", channel_id),
+            Some(json!({"bot_id": &bot_id})),
+            &token,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }
