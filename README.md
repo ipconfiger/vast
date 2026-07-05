@@ -13,6 +13,9 @@ A full-featured instant messaging server with a modern React frontend. Built wit
 - **Search** — full-text message search across channels
 - **Join requests & invitations** — access control for private channels
 - **JWT authentication** — register, login, token-based auth
+- **Admin console** — env-configured admin account, user management (disable / force-logout via token epoch), invite code management, dashboard stats, audit logging
+- **Unread message badges** — red count badges on channels and DMs in the sidebar
+- **Token epoch revocation** — disabling a user instantly invalidates all their active JWTs
 - **TLS support** — self-signed and Let's Encrypt modes
 
 ## Quick Start
@@ -37,6 +40,8 @@ make dev
 ```
 
 The backend starts on **http://localhost:3000** and the frontend dev server on **http://localhost:5173** (proxying API and WebSocket to the backend).
+
+Admin console available at **http://localhost:5173/admin/login** (admin / admin123 in dev mode).
 
 ### Production Build
 
@@ -79,6 +84,9 @@ TLS_MODE=self-signed ./target/release/im-server
 │  ├─────────┤  ├──────────┤  ├────────┤  ├───────────────┤  │
 │  │Channels │  │  DM      │  │Reaction│  │  Invitations  │  │
 │  │         │  │          │  │        │  │  + Requests   │  │
+│  ├─────────┤  ├──────────┤  ├────────┤  ├───────────────┤  │
+│  │ Admin   │  │          │  │        │  │               │  │
+│  │(env JWT)│  │          │  │        │  │               │  │
 │  ├─────────┴──┴──────────┴──┴────────┴──┴───────────────┤  │
 │  │              WebSocket Manager (presence, typing)      │  │
 │  ├───────────────────────────────────────────────────────┤  │
@@ -113,10 +121,12 @@ vast/
 │   │   ├── search.rs     #  Full-text search
 │   │   ├── requests.rs   #  Join requests
 │   │   ├── invitations.rs#  Invitations
-│   │   └── presence.rs   #  Presence status
+│   │   ├── presence.rs   #  Presence status
+│   │   └── admin/        #  Admin console API (login, users, invites, audit)
 │   ├── auth/             #  Auth module
 │   │   ├── mod.rs        #  JWT + password utilities
-│   │   └── middleware.rs #  JWT auth middleware
+│   │   ├── middleware.rs #  JWT auth middleware
+│   │   └── admin.rs      #  Admin JWT + AdminAuthenticatedUser extractor
 │   ├── ws/               #  WebSocket handler
 │   │   ├── mod.rs        #  Connection manager + hub
 │   │   └── protocol.rs   #  WS message protocol
@@ -131,8 +141,12 @@ vast/
 │   │   ├── api/          #  API client (channels, dm, reactions, ...)
 │   │   ├── components/   #  UI components (MessageList, ChannelSidebar, ...)
 │   │   ├── pages/        #  Route pages (Login, Register, Search, DM, ...)
+│   │   │   └── admin/    #  Admin pages (Login, Dashboard, Users, InviteCodes, AuditLogs)
 │   │   ├── hooks/        #  Custom hooks (useWebSocket, useCursorSync, ...)
+│   │   │   └── useUnreadTracker.ts #  WS new_msg → unread count tracking
 │   │   ├── stores/       #  Zustand stores (auth, channel, message, ...)
+│   │   │   ├── adminAuthStore.ts #  Admin auth state (Zustand)
+│   │   │   └── unreadStore.ts    #  Unread message counts (in-memory)
 │   │   ├── types/        #  TypeScript type definitions
 │   │   └── test/         #  Test setup
 │   ├── e2e/              #  Playwright E2E tests
@@ -147,7 +161,7 @@ vast/
 │   │   └── helpers.ts            #  Shared E2E utilities
 │   └── vitest.config.ts #  Unit test config
 ├── tests/                #  Rust integration tests
-│   └── integration/      #  175 tests across 4 suites
+│   └── integration/      #  28 integration tests (4 suites)
 ├── scripts/              # Utility scripts
 │   ├── build.sh          #  One-click build
 │   ├── bench.sh          #  Benchmark suite
@@ -232,6 +246,28 @@ All API endpoints are prefixed with `/api`. Authentication via `Authorization: B
 | PUT    | `/api/invitations/{id}/accept`          | Accept an invitation     |
 | PUT    | `/api/invitations/{id}/reject`          | Reject an invitation     |
 
+### Admin Console
+
+All admin endpoints are prefixed with `/api/admin` and require a separate admin JWT (obtained via `/api/admin/login`).
+
+| Method | Path                          | Description                              |
+|--------|-------------------------------|------------------------------------------|
+| POST   | `/api/admin/login`            | Admin login (env credentials)            |
+| POST   | `/api/admin/logout`           | Admin logout                             |
+| POST   | `/api/admin/refresh`          | Refresh admin token                      |
+| GET    | `/api/admin/me`               | Get admin info                           |
+| GET    | `/api/admin/dashboard`        | Dashboard stats (user/channel/msg counts)|
+| GET    | `/api/admin/users`            | List users                               |
+| GET    | `/api/admin/users/{id}`       | Get user details                         |
+| PATCH  | `/api/admin/users/{id}`       | Update user (disable/enable)             |
+| POST   | `/api/admin/users/{id}/reset-password` | Reset user password            |
+| DELETE | `/api/admin/users/{id}`       | Delete user                              |
+| GET    | `/api/admin/invite-codes`     | List invite codes                        |
+| POST   | `/api/admin/invite-codes`     | Create invite code                       |
+| PATCH  | `/api/admin/invite-codes/{code}` | Update invite code (toggle/reset count)|
+| DELETE | `/api/admin/invite-codes/{code}` | Delete invite code                    |
+| GET    | `/api/admin/audit-logs`       | List audit logs (filterable by action)   |
+
 ### WebSocket
 
 Connect to `/ws?token=<jwt_token>` for real-time events:
@@ -239,6 +275,7 @@ Connect to `/ws?token=<jwt_token>` for real-time events:
 - Typing indicators
 - Presence updates (online/offline)
 - Message reactions
+- Message updates (e.g. join-request status changes)
 
 ### Health
 
@@ -294,6 +331,8 @@ sudo nginx -t && sudo systemctl reload nginx
 | `SERVER_PORT` | `3000`                     | HTTP listen port                       |
 | `UPLOAD_MAX_SIZE` | `52428800`            | Max upload size in bytes (50 MiB)      |
 | `TLS_MODE`    | `none`                     | `none`, `self-signed`, or `lets-encrypt`|
+| `ADMIN_USERNAME` | `admin`             | Admin console username                          |
+| `ADMIN_PASSWORD` | (empty = disabled)  | Admin console password (required to enable)     |
 
 ### systemd Service
 
@@ -308,10 +347,13 @@ The service runs as `im-server` user with strict hardening:
 # Run tests (backend + frontend unit)
 make test
 
+# Run frontend unit tests (180 tests)
+cd frontend && bun test
+
 # Run E2E tests (requires servers running on :3000 + :5173)
 make test-e2e
 
-# Run Rust integration tests only (175 tests)
+# Run Rust integration tests only (287 backend tests: 259 unit + 28 integration)
 make test-backend
 
 # Run lints
@@ -321,6 +363,7 @@ make clippy
 make clean
 
 # Parallel dev servers (backend + hot-reload frontend)
+# make dev sets ADMIN_USERNAME=admin ADMIN_PASSWORD=admin123
 make dev
 ```
 

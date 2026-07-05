@@ -18,8 +18,11 @@
 | **后端框架** | `Axum` + `Tokio` | 高性能异步 Web 框架，原生支持 WebSocket |
 | **数据库** | `SQLite` + `SQLx` | 单文件部署的绝配，零配置，支持高并发读 |
 | **实时通信** | `WebSocket` (原生) | 仅用于推送“游标事件”，不传输大体积正文 |
-| **前端框架** | `React 18` + `Vite` | 现代化、极速构建 |
-| **状态管理** | `Zustand` | 轻量级，适合管理 WS 状态和消息游标 |
+| **前端框架** | `React 19` + `Vite 7` | 现代化、极速构建 |
+| **样式** | `Tailwind CSS 4` | 原子化 CSS，与 Vite 插件深度集成 |
+| **状态管理** | `Zustand 5` | 轻量级，适合管理 WS 状态和消息游标 |
+| **数据获取** | `@tanstack/react-query 5` | 服务端状态缓存与同步 |
+| **图标** | `lucide-react` | 轻量、一致的图标库 |
 | **代码片段** | `Monaco Editor` | 提供企业级代码高亮与编辑体验 |
 | **单文件打包** | `rust-embed` | 将前端 `dist` 目录编译进 Rust 二进制 |
 
@@ -34,9 +37,42 @@
 CREATE TABLE users (
     id TEXT PRIMARY KEY, -- UUID
     username TEXT UNIQUE NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',   -- 显示昵称
     password_hash TEXT NOT NULL,
-    avatar_url TEXT,
+    avatar_url TEXT DEFAULT '',              -- 头像 URL（默认空字符串）
+    token_epoch INTEGER NOT NULL DEFAULT 0,  -- Token 纪元：递增可强制下线所有旧 JWT
     created_at INTEGER NOT NULL
+);
+
+-- 会话表（登录态记录，用于审计与踢出）
+CREATE TABLE sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL,                -- 存哈希，不存明文
+    is_refresh BOOLEAN NOT NULL DEFAULT 0,
+    is_active BOOLEAN NOT NULL DEFAULT 1,    -- 置 0 即可在服务端吊销会话
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+
+-- 邀请码表（注册时需提供有效邀请码）
+CREATE TABLE invite_codes (
+    code TEXT PRIMARY KEY,
+    created_by_user_id TEXT,                 -- 创建者（系统码为 NULL）
+    max_uses INTEGER NOT NULL DEFAULT 100,
+    use_count INTEGER NOT NULL DEFAULT 0,
+    is_active BOOLEAN NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL
+);
+
+-- 管理员审计日志（追加写，管理员控制台的所有写操作都落一条）
+CREATE TABLE admin_audit_logs (
+    id TEXT PRIMARY KEY,
+    action TEXT NOT NULL,                    -- 如 user.disable / invite_code.create
+    target_type TEXT,
+    target_id TEXT,
+    details TEXT,                            -- JSON 上下文
+    performed_at INTEGER NOT NULL
 );
 
 -- 频道表
@@ -99,16 +135,20 @@ CREATE TABLE invitations (
 **方案**：WS 仅作为“信令通道”，消息正文通过 REST 按需拉取。
 
 * **WS 推送事件 (Rust -> TS)**：
-  当有新消息时，后端通过 WS 推送极简的元数据：
+  当有新消息时，后端通过 WS 推送极简的元数据（实际 serde 标签为 `type`，而非 `event`）：
   ```json
   {
-    "event": "new_msg",
+    "type": "new_msg",
     "channel_id": "ch_123",
     "cursor": 1054,          // 数据库自增ID，作为游标
     "sender_id": "user_A",
     "msg_type": "file",
     "preview": "[图片] photo.jpg" // 用于UI占位渲染
   }
+  ```
+  当消息正文变化时（如加入申请被批准、消息被编辑等），后端推送 `msg_updated` 事件，前端按需刷新对应实体：
+  ```json
+  { "type": "msg_updated", "channel_id": "ch_123", "cursor": 1054 }
   ```
 * **前端拉取逻辑 (TS)**：
   前端维护每个 Channel 的 `last_cursor`。收到 WS 事件后，若当前正在查看该 Channel，则调用 REST API 拉取：
@@ -197,7 +237,7 @@ let upload_dir = data_dir.join("uploads");
 #### 3. 打包与运行
 ```bash
 # 1. 构建前端
-cd frontend && npm run build
+cd frontend && bun run build
 
 # 2. 编译 Rust (开启 release 优化)
 cargo build --release
@@ -235,6 +275,8 @@ im-enterprise/
 │   └── package.json
 └── README.md
 ```
+
+> **实现差异说明**：实际实现中，后端代码直接在仓库根目录 `src/` 下（即上图的 `backend/src/` 实际路径为 `<repo-root>/src/`），前端仍位于 `frontend/`。这样 `cargo`/`make` 在仓库根目录即可工作，无需 `cd backend`。
 
 ---
 
