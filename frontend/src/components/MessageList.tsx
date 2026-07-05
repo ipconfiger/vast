@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef } from 'react'
-import { useVirtualizer } from '@tanstack/react-virtual'
+import { useEffect, useRef } from 'react'
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { useMessages } from '../api/channels'
 import { useMessageStore } from '../stores/messageStore'
 import { useAuthStore } from '../stores/authStore'
@@ -14,45 +14,53 @@ interface MessageListProps {
 }
 
 export function MessageList({ channelId }: MessageListProps) {
-  const parentRef = useRef<HTMLDivElement>(null)
+  const virtuosoRef = useRef<VirtuosoHandle>(null)
   const prevMessageCountRef = useRef(0)
   const isAtBottomRef = useRef(true)
 
   const { data: messageData, isLoading } = useMessages(channelId)
-  // Keep `?? []` OUTSIDE the selector: returning a fresh `[]` from inside
-  // trips React's useSyncExternalStore "getSnapshot should be cached" loop.
   const messages = useMessageStore((s) => s.messagesByChannel.get(channelId)) ?? []
+
   const setMessages = useMessageStore((s) => s.setMessages)
   const user = useAuthStore((s) => s.user)
 
-  // Deviates from plan CHANGE 6: the unwrapped Message[] is already bound to
-  // `messageData` here (useMessages' queryFn returns data.messages), so the
-  // .data member does not exist on it. Intent (depend on data) is met.
+  // ── Data flow: sync useMessages (React Query) → messageStore ──
   useEffect(() => {
-    if (messageData) {
+    if (!messageData) return
+
+    const existing = useMessageStore.getState().messagesByChannel.get(channelId)
+
+    // Initial load — use full replacement.
+    if (!existing || existing.length === 0) {
       setMessages(channelId, messageData)
+      return
     }
+
+    // Same count — full replacement to catch in-place payload mutations
+    // (e.g. join-request status: pending → approved). The old "skip if
+    // same last msg_id" optimization missed payload-only updates.
+    if (existing.length === messageData.length) {
+      setMessages(channelId, messageData)
+      return
+    }
+
+    // More messages from the server — add only the new ones incrementally.
+    if (messageData.length > existing.length) {
+      const existingIds = new Set(existing.map(m => m.msg_id))
+      const store = useMessageStore.getState()
+      for (const msg of messageData) {
+        if (!existingIds.has(msg.msg_id)) {
+          store.addMessage(channelId, msg)
+        }
+      }
+      return
+    }
+
+    // Edge case: fewer messages or reordered — full replacement.
+    setMessages(channelId, messageData)
   }, [messageData, channelId, setMessages])
 
-  const virtualizer = useVirtualizer({
-    count: messages.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 68,
-    overscan: 5,
-    getItemKey: (index) => messages[index]?.id ?? messages[index]?.msg_id ?? index,
-  })
-
-  const virtualItems = virtualizer.getVirtualItems()
-
-  const scrollToBottom = useCallback((smooth = false) => {
-    requestAnimationFrame(() => {
-      virtualizer.scrollToIndex(messages.length - 1, {
-        align: 'end',
-        behavior: smooth ? 'smooth' : 'auto',
-      })
-    })
-  }, [virtualizer, messages.length])
-
+  // ── Scroll: auto-scroll to bottom on new messages ──
   useEffect(() => {
     const prevCount = prevMessageCountRef.current
     const newCount = messages.length
@@ -63,34 +71,23 @@ export function MessageList({ channelId }: MessageListProps) {
       const isInitial = prevCount === 0
 
       if (isOwn || isInitial || isAtBottomRef.current) {
-        scrollToBottom()
+        requestAnimationFrame(() => {
+          virtuosoRef.current?.scrollToIndex({
+            index: 'LAST',
+            align: 'end',
+            behavior: isInitial ? 'auto' : 'smooth',
+          })
+        })
       }
     }
 
     prevMessageCountRef.current = newCount
-  }, [messages.length, user?.id, scrollToBottom])
+  }, [messages.length, user?.id])
 
+  // ── Channel switch: reset at-bottom flag ──
   useEffect(() => {
-    if (messages.length === 0) return
     isAtBottomRef.current = true
-    const timer = setTimeout(() => {
-      scrollToBottom(true)
-    }, 100)
-    return () => clearTimeout(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channelId])
-
-  // Cannot use [] here: the loading early-return renders <MessageListSkeleton/>
-  // before parentRef is bound, so a mount-only effect would bail on null forever.
-  useEffect(() => {
-    const el = parentRef.current
-    if (!el) return
-    const onScroll = () => {
-      isAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-    }
-    el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
-  }, [messages.length])
 
   if (isLoading) {
     return <MessageListSkeleton />
@@ -101,42 +98,32 @@ export function MessageList({ channelId }: MessageListProps) {
   }
 
   return (
-    <div ref={parentRef} data-testid="message-list-scroll" className="flex-1 overflow-y-auto">
-      <div
-        className="relative w-full"
-        style={{ height: `${virtualizer.getTotalSize()}px` }}
-      >
-        <div
-          className="absolute top-0 left-0 w-full"
-          style={{
-            transform: `translateY(${virtualItems[0]?.start ?? 0}px)`,
-          }}
-        >
-          {virtualItems.map((virtualItem) => {
-            const message = messages[virtualItem.index]
-            return (
-              <div
-                key={message.id || message.msg_id}
-                data-index={virtualItem.index}
-                ref={virtualizer.measureElement}
-              >
-                <MessageBubble
-                  message={message}
-                  isOwn={message.sender_id === user?.id}
-                  senderAvatar={message.sender_id === user?.id ? user?.avatar_url : message.sender_avatar_url}
-                  senderName={
-                    message.sender_id === user?.id
-                      ? 'You'
-                      : getUserDisplayName(message.sender_display_name, message.sender_name, message.sender_id)
-                  }
-                  timestamp={dayjs(message.created_at).format('h:mm A')}
-                  channelId={channelId}
-                />
-              </div>
-            )
-          })}
-        </div>
-      </div>
-    </div>
+    <Virtuoso
+      ref={virtuosoRef}
+      data={messages}
+      computeItemKey={(_, msg) => msg.id || msg.msg_id}
+      itemContent={(_, message) => (
+        <MessageBubble
+          message={message}
+          isOwn={message.sender_id === user?.id}
+          senderAvatar={message.sender_id === user?.id ? user?.avatar_url : message.sender_avatar_url}
+          senderName={
+            message.sender_id === user?.id
+              ? 'You'
+              : getUserDisplayName(message.sender_display_name, message.sender_name, message.sender_id)
+          }
+          timestamp={dayjs(message.created_at).format('h:mm A')}
+          channelId={channelId}
+        />
+      )}
+      atBottomStateChange={(atBottom) => {
+        isAtBottomRef.current = atBottom
+      }}
+      atBottomThreshold={80}
+      alignToBottom
+      initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
+      style={{ flex: 1 }}
+      data-testid="message-list-scroll"
+    />
   )
 }
