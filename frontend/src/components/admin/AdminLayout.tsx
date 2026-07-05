@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { useAdminAuthStore } from '../../stores/adminAuthStore'
 import { adminLogout } from '../../api/admin'
+import { ToastContainer } from '../ToastContainer'
 
 const NAV_ITEMS = [
   { to: '/admin', label: 'Dashboard', icon: LayoutDashboard, end: true },
@@ -88,6 +89,9 @@ export default function AdminLayout() {
           <Outlet />
         </main>
       </div>
+
+      {/* Toast notifications */}
+      <ToastContainer />
     </div>
   )
 }
