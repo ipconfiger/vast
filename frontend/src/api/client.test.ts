@@ -13,7 +13,7 @@ vi.mock('../stores/authStore', () => ({
 }))
 
 const mockFetch = vi.fn()
-global.fetch = mockFetch
+globalThis.fetch = mockFetch
 
 describe('apiClient', () => {
   beforeEach(() => {
