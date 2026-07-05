@@ -321,6 +321,105 @@ pub async fn delete_bot(
     ok_response(serde_json::json!({}))
 }
 
+/// POST /api/admin/bots/{id}/test
+///
+/// Sends a `ping` chat-completion request to the bot's Hermes API and
+/// reports whether the round-trip succeeded. Always returns 200 with an
+/// `ok` field — connection failures, timeouts, non-2xx responses, and
+/// parse errors all surface as `{ ok: false, error }` so the caller can
+/// treat this as a pure boolean check without parsing HTTP status codes.
+///
+/// The 10-second timeout is shorter than `HermesClient`'s 60s default so
+/// the admin UI gets quick feedback.
+pub async fn test_bot(
+    _admin: AdminAuthenticatedUser,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let row: Option<(String, String, String)> =
+        sqlx::query_as("SELECT api_url, api_key, model FROM bots WHERE id = ?")
+            .bind(&id)
+            .fetch_optional(&state.pool)
+            .await?;
+    let (api_url, api_key, model) = row
+        .ok_or_else(|| AppError::NotFound("Bot not found".to_string()))?;
+
+    let url = format!("{}/v1/chat/completions", api_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{"role": "user", "content": "ping"}],
+        "stream": false
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| AppError::Internal(format!("HTTP client build failed: {e}")))?;
+
+    let mut req = client
+        .post(&url)
+        .json(&body)
+        .header("X-Hermes-Session-Id", "test");
+    if !api_key.is_empty() {
+        req = req.header("Authorization", format!("Bearer {api_key}"));
+    }
+
+    match req.send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            if !status.is_success() {
+                let text = resp.text().await.unwrap_or_default();
+                return Ok(Json(serde_json::json!({
+                    "ok": false,
+                    "error": format!("Hermes returned {status}: {}", truncate_preview(&text, 200))
+                })));
+            }
+            let text = resp.text().await.unwrap_or_default();
+            // Prefer the parsed assistant content; fall back to a raw-body
+            // preview so the admin still sees something useful if Hermes
+            // returns a non-OpenAI shape.
+            let preview = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|v| {
+                    v["choices"][0]["message"]["content"]
+                        .as_str()
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_else(|| truncate_preview(&text, 200));
+            Ok(Json(serde_json::json!({
+                "ok": true,
+                "response": preview
+            })))
+        }
+        Err(e) => {
+            let msg = if e.is_timeout() {
+                "Request timed out".to_string()
+            } else if e.is_connect() {
+                format!("Connection failed: {e}")
+            } else {
+                e.to_string()
+            };
+            Ok(Json(serde_json::json!({
+                "ok": false,
+                "error": msg
+            })))
+        }
+    }
+}
+
+/// Truncate `s` to at most `max` chars (counting Unicode scalar values),
+/// appending an ellipsis when truncation occurs. Used to keep test
+/// responses short enough for the admin UI toast.
+fn truncate_preview(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut truncated: String = s.chars().take(max).collect();
+        truncated.push('…');
+        truncated
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -329,6 +428,7 @@ pub fn bot_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", post(create_bot).get(list_bots))
         .route("/{id}", get(get_bot).patch(update_bot).delete(delete_bot))
+        .route("/{id}/test", post(test_bot))
 }
 
 // ===========================================================================
@@ -806,6 +906,195 @@ mod tests {
             post_json_with_token(&mut app, "/admin/bots", body, &pair.access_token).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"]["code"], "BAD_REQUEST");
+    }
+
+    // -----------------------------------------------------------------------
+    // 8. Test endpoint
+    // -----------------------------------------------------------------------
+
+    /// Given: a bot whose `api_url` points at an in-process mock that
+    ///        returns an OpenAI-compatible chat completion.
+    /// When:  POST /admin/bots/{id}/test.
+    /// Then:  200 OK with `{ ok: true, response: "pong" }`.
+    #[tokio::test]
+    async fn test_test_bot_success() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mock_addr = listener.local_addr().unwrap();
+        let mock_url = format!("http://{mock_addr}");
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            loop {
+                let (mut sock, _) = match listener.accept().await {
+                    Ok(p) => p,
+                    Err(_) => break,
+                };
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    let body = serde_json::json!({
+                        "choices": [{"message": {"content": "pong"}}]
+                    });
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.to_string().len(),
+                        body
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    let _ = sock.shutdown().await;
+                });
+            }
+        });
+
+        let pool = setup_pool().await;
+        let mut app = build_app(make_state(pool.clone(), admin_enabled_config()));
+        let pair = create_admin_token_pair(SECRET).unwrap();
+
+        let create_body = json!({
+            "name": "hermes",
+            "display_name": "Hermes",
+            "api_url": mock_url,
+            "api_key": "sekret",
+            "model": "hermes"
+        });
+        let (_, created) =
+            post_json_with_token(&mut app, "/admin/bots", create_body, &pair.access_token).await;
+        let id = created["id"].as_str().unwrap().to_string();
+
+        let (status, body) = post_json_with_token(
+            &mut app,
+            &format!("/admin/bots/{id}/test"),
+            json!({}),
+            &pair.access_token,
+        )
+        .await;
+
+        server.abort();
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["response"], "pong");
+    }
+
+    /// Given: a bot whose `api_url` points at a port with no listener.
+    /// When:  POST /admin/bots/{id}/test.
+    /// Then:  200 OK with `{ ok: false, error }` (connection refused).
+    #[tokio::test]
+    async fn test_test_bot_connection_failed() {
+        // Reserve a port then drop the listener — connecting typically
+        // yields ECONNREFUSED on the same host.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let dead_url = format!("http://127.0.0.1:{port}");
+
+        let pool = setup_pool().await;
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair(SECRET).unwrap();
+
+        let (_, created) = post_json_with_token(
+            &mut app,
+            "/admin/bots",
+            json!({ "name": "dead", "api_url": dead_url }),
+            &pair.access_token,
+        )
+        .await;
+        let id = created["id"].as_str().unwrap().to_string();
+
+        let (status, body) = post_json_with_token(
+            &mut app,
+            &format!("/admin/bots/{id}/test"),
+            json!({}),
+            &pair.access_token,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ok"], false);
+        assert!(
+            body.get("error").and_then(|e| e.as_str()).is_some(),
+            "expected error message, got {body}"
+        );
+    }
+
+    /// Given: a bot whose `api_url` accepts TCP connections but never
+    ///        writes a response.
+    /// When:  POST /admin/bots/{id}/test (10s timeout).
+    /// Then:  200 OK with `{ ok: false, error: "Request timed out" }`.
+    #[tokio::test]
+    async fn test_test_bot_timeout() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mock_addr = listener.local_addr().unwrap();
+        let mock_url = format!("http://{mock_addr}");
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = match listener.accept().await {
+                    Ok(p) => p,
+                    Err(_) => break,
+                };
+                // Drain the request but never respond — forces client timeout.
+                tokio::spawn(async move {
+                    use tokio::io::AsyncReadExt;
+                    let mut buf = vec![0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    std::future::pending::<()>().await;
+                });
+            }
+        });
+
+        let pool = setup_pool().await;
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair(SECRET).unwrap();
+
+        let (_, created) = post_json_with_token(
+            &mut app,
+            "/admin/bots",
+            json!({ "name": "slow", "api_url": mock_url }),
+            &pair.access_token,
+        )
+        .await;
+        let id = created["id"].as_str().unwrap().to_string();
+
+        // Bound the whole test to avoid hanging the suite if the timeout
+        // ever regresses.
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            post_json_with_token(
+                &mut app,
+                &format!("/admin/bots/{id}/test"),
+                json!({}),
+                &pair.access_token,
+            ),
+        )
+        .await;
+        server.abort();
+
+        let (status, body) = outcome.expect("test did not complete within 15s");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ok"], false);
+        assert!(
+            body["error"].as_str().unwrap_or("").contains("timed out"),
+            "expected timeout error, got {}",
+            body["error"]
+        );
+    }
+
+    /// Given: no bot with the requested id.
+    /// When:  POST /admin/bots/missing/test.
+    /// Then:  404 Not Found (test_bot surfaces a missing config row as 404
+    ///        rather than ok:false, since the bot itself is the resource).
+    #[tokio::test]
+    async fn test_test_bot_not_found() {
+        let pool = setup_pool().await;
+        let mut app = build_app(make_state(pool, admin_enabled_config()));
+        let pair = create_admin_token_pair(SECRET).unwrap();
+
+        let (status, body) = post_json_with_token(
+            &mut app,
+            "/admin/bots/does-not-exist/test",
+            json!({}),
+            &pair.access_token,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["code"], "NOT_FOUND");
     }
 
     /// Given: create, update, delete each write an audit row.

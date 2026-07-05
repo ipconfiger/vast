@@ -359,6 +359,19 @@ export async function deleteBot(id: string): Promise<void> {
   })
 }
 
+export interface BotTestResult {
+  ok: boolean
+  response?: string
+  error?: string
+}
+
+export async function testBot(id: string): Promise<BotTestResult> {
+  return adminApiClient<BotTestResult>(
+    `/bots/${encodeURIComponent(id)}/test`,
+    { method: 'POST' },
+  )
+}
+
 // --- Audit logs ---
 
 export async function listAuditLogs(

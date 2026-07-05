@@ -11,12 +11,14 @@ const listBotsMock = vi.fn()
 const createBotMock = vi.fn()
 const updateBotMock = vi.fn()
 const deleteBotMock = vi.fn()
+const testBotMock = vi.fn()
 
 vi.mock('../../api/admin', () => ({
   listBots: () => listBotsMock(),
   createBot: (arg: unknown) => createBotMock(arg),
   updateBot: (id: unknown, body: unknown) => updateBotMock(id, body),
   deleteBot: (id: unknown) => deleteBotMock(id),
+  testBot: (id: unknown) => testBotMock(id),
   AdminApiClientError: class AdminApiClientError extends Error {
     code: string
     status: number
@@ -27,6 +29,18 @@ vi.mock('../../api/admin', () => ({
       this.name = 'AdminApiClientError'
     }
   },
+}))
+
+const toastSuccessMock = vi.fn()
+const toastErrorMock = vi.fn()
+vi.mock('../../stores/toastStore', () => ({
+  toast: {
+    success: (msg: string) => toastSuccessMock(msg),
+    error: (msg: string) => toastErrorMock(msg),
+    info: vi.fn(),
+    warning: vi.fn(),
+  },
+  useToastStore: () => ({ toasts: [] }),
 }))
 
 // --- Fixtures --------------------------------------------------------------
@@ -253,5 +267,55 @@ describe('AdminBotsPage', () => {
     await waitFor(() => {
       expect(deleteBotMock).toHaveBeenCalledWith('bot-1')
     })
+  })
+
+  it('renders a Test action button for each bot', async () => {
+    const { findByLabelText } = renderPage()
+    expect(await findByLabelText('Test hermes')).toBeInTheDocument()
+  })
+
+  it('calls testBot with the bot id when Test is clicked', async () => {
+    testBotMock.mockResolvedValue({ ok: true, response: 'pong' })
+
+    const { findByLabelText } = renderPage()
+    fireEvent.click(await findByLabelText('Test hermes'))
+
+    await waitFor(() => {
+      expect(testBotMock).toHaveBeenCalledWith('bot-1')
+    })
+  })
+
+  it('shows a success toast when testBot returns ok:true', async () => {
+    testBotMock.mockResolvedValue({ ok: true, response: 'pong from hermes' })
+
+    const { findByLabelText } = renderPage()
+    fireEvent.click(await findByLabelText('Test hermes'))
+
+    await waitFor(() => {
+      expect(toastSuccessMock).toHaveBeenCalledWith(
+        expect.stringContaining('✅ 连接成功'),
+      )
+    })
+    expect(toastSuccessMock).toHaveBeenCalledWith(
+      expect.stringContaining('pong from hermes'),
+    )
+    expect(toastErrorMock).not.toHaveBeenCalled()
+  })
+
+  it('shows an error toast when testBot returns ok:false', async () => {
+    testBotMock.mockResolvedValue({ ok: false, error: 'Connection refused' })
+
+    const { findByLabelText } = renderPage()
+    fireEvent.click(await findByLabelText('Test hermes'))
+
+    await waitFor(() => {
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        expect.stringContaining('❌ 连接失败'),
+      )
+    })
+    expect(toastErrorMock).toHaveBeenCalledWith(
+      expect.stringContaining('Connection refused'),
+    )
+    expect(toastSuccessMock).not.toHaveBeenCalled()
   })
 })

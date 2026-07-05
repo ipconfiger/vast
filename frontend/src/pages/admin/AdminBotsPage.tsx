@@ -9,6 +9,7 @@ import {
   Loader2,
   AlertCircle,
   X,
+  Zap,
 } from 'lucide-react'
 import dayjs from 'dayjs'
 import {
@@ -16,6 +17,7 @@ import {
   createBot,
   updateBot,
   deleteBot,
+  testBot,
   type Bot,
 } from '../../api/admin'
 import { toast } from '../../stores/toastStore'
@@ -44,6 +46,8 @@ export default function AdminBotsPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Bot | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Bot | null>(null)
+
+  const bots = data ?? []
 
   const invalidateList = () =>
     queryClient.invalidateQueries({ queryKey: QUERY_KEY })
@@ -99,7 +103,30 @@ export default function AdminBotsPage() {
     },
   })
 
-  const bots = data ?? []
+  const testMutation = useMutation({
+    mutationFn: (id: string) => testBot(id),
+    onSuccess: (result, id) => {
+      const botName = bots.find((b) => b.id === id)?.name ?? 'Bot'
+      if (result.ok) {
+        const preview = (result.response ?? '').slice(0, 100)
+        toast.success(
+          preview
+            ? `✅ 连接成功 — ${botName}: ${preview}`
+            : `✅ 连接成功 — ${botName}`,
+        )
+      } else {
+        toast.error(`❌ 连接失败 — ${botName}: ${result.error ?? 'unknown error'}`)
+      }
+    },
+    onError: (e, id) => {
+      const botName = bots.find((b) => b.id === id)?.name ?? 'Bot'
+      toast.error(
+        e instanceof Error
+          ? `❌ 连接失败 — ${botName}: ${e.message}`
+          : `❌ 连接失败 — ${botName}`,
+      )
+    },
+  })
 
   return (
     <div>
@@ -199,6 +226,24 @@ export default function AdminBotsPage() {
                         className="rounded-md border border-zinc-700 p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-50"
                       >
                         <Power className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => testMutation.mutate(bot.id)}
+                        disabled={
+                          testMutation.isPending &&
+                          testMutation.variables === bot.id
+                        }
+                        title="Test connectivity"
+                        aria-label={`Test ${bot.name}`}
+                        className="rounded-md border border-zinc-700 p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-emerald-300 disabled:opacity-50"
+                      >
+                        {testMutation.isPending &&
+                        testMutation.variables === bot.id ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Zap className="h-4 w-4" />
+                        )}
                       </button>
                       <button
                         type="button"
