@@ -23,6 +23,7 @@ import AdminDashboardPage from './pages/admin/AdminDashboardPage'
 import AdminUsersPage from './pages/admin/AdminUsersPage'
 import AdminInviteCodesPage from './pages/admin/AdminInviteCodesPage'
 import AdminAuditLogsPage from './pages/admin/AdminAuditLogsPage'
+import AdminBotsPage from './pages/admin/AdminBotsPage'
 
 function AppLayout() {
   useKeyboardShortcuts()
@@ -128,6 +129,10 @@ const router = createBrowserRouter([
           {
             path: 'invite-codes',
             element: <AdminInviteCodesPage />,
+          },
+          {
+            path: 'bots',
+            element: <AdminBotsPage />,
           },
           {
             path: 'audit-logs',

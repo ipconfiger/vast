@@ -57,6 +57,17 @@ export interface AuditLog {
   performed_at: number
 }
 
+export interface Bot {
+  id: string
+  name: string
+  display_name: string
+  api_url: string
+  system_prompt: string
+  model: string
+  is_active: boolean
+  created_at: number
+}
+
 interface AdminTokenPair {
   access_token: string
   refresh_token: string
@@ -300,6 +311,49 @@ export async function updateInviteCode(
 
 export async function deleteInviteCode(code: string): Promise<void> {
   await adminApiClient<void>(`/invite-codes/${encodeURIComponent(code)}`, {
+    method: 'DELETE',
+  })
+}
+
+// --- Bots ---
+
+export async function listBots(): Promise<Bot[]> {
+  return adminApiClient<Bot[]>('/bots')
+}
+
+export async function createBot(body: {
+  name: string
+  display_name?: string
+  api_url: string
+  api_key?: string
+  system_prompt?: string
+  model?: string
+}): Promise<Bot> {
+  return adminApiClient<Bot>('/bots', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export async function updateBot(
+  id: string,
+  body: Partial<{
+    display_name: string
+    api_url: string
+    api_key: string
+    system_prompt: string
+    model: string
+    is_active: boolean
+  }>,
+): Promise<Bot> {
+  return adminApiClient<Bot>(`/bots/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  })
+}
+
+export async function deleteBot(id: string): Promise<void> {
+  await adminApiClient<void>(`/bots/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   })
 }

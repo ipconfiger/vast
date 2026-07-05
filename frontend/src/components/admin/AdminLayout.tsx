@@ -8,6 +8,7 @@ import {
   Users,
   Ticket,
   ScrollText,
+  Bot,
   LogOut,
 } from 'lucide-react'
 import { useAdminAuthStore } from '../../stores/adminAuthStore'
@@ -17,6 +18,7 @@ const NAV_ITEMS = [
   { to: '/admin', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/admin/users', label: 'Users', icon: Users, end: false },
   { to: '/admin/invite-codes', label: 'Invite Codes', icon: Ticket, end: false },
+  { to: '/admin/bots', label: 'Bots', icon: Bot, end: false },
   { to: '/admin/audit-logs', label: 'Audit Logs', icon: ScrollText, end: false },
 ] as const
 
