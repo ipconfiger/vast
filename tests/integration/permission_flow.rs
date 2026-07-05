@@ -183,7 +183,7 @@ async fn permission_lifecycle_integration_flow() {
     // Find the user we just added
     let target_user_id = members
         .iter()
-        .find(|m| m["username"] == "permuser")
+        .find(|m| m["user"]["username"] == "permuser")
         .map(|m| m["user_id"].as_str().unwrap().to_string())
         .expect("Should find permuser in members list");
 
@@ -286,7 +286,7 @@ async fn non_owner_cannot_change_roles() {
     let members = body.as_array().unwrap();
     let member2_id = members
         .iter()
-        .find(|m| m["username"] == "rolemember2")
+        .find(|m| m["user"]["username"] == "rolemember2")
         .map(|m| m["user_id"].as_str().unwrap().to_string())
         .unwrap();
 
@@ -355,7 +355,7 @@ async fn non_owner_cannot_kick() {
     let members = body.as_array().unwrap();
     let member2_id = members
         .iter()
-        .find(|m| m["username"] == "kickmember2")
+        .find(|m| m["user"]["username"] == "kickmember2")
         .map(|m| m["user_id"].as_str().unwrap().to_string())
         .unwrap();
 

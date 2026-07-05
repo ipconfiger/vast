@@ -381,7 +381,7 @@ pub async fn send_message(
                     ).bind(&channel_id).bind(args.trim()).fetch_optional(&state.pool).await?;
                     match target_row {
                         None => Err(AppError::NotFound("User not found".into())),
-                        Some((tid, ref trole)) if trole == "owner" => Err(AppError::Forbidden("Cannot kick the channel owner".into())),
+                        Some((_tid, ref trole)) if trole == "owner" => Err(AppError::Forbidden("Cannot kick the channel owner".into())),
                         Some((tid, _)) if tid == user_id => Err(AppError::BadRequest("You cannot kick yourself".into())),
                         Some((_, ref trole)) if trole.is_empty() => Err(AppError::NotFound("User is not a member of this channel".into())),
                         Some((tid, _)) => {
