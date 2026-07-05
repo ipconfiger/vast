@@ -59,6 +59,7 @@ export interface AuditLog {
 
 export interface Bot {
   id: string
+  user_id: string
   name: string
   display_name: string
   api_url: string

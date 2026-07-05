@@ -1,6 +1,9 @@
-import { User, Crown, Shield, UserMinus, Loader2 } from 'lucide-react'
+import { Crown, Shield, UserMinus, Loader2 } from 'lucide-react'
 import { useChannelMembers, useRemoveMember } from '../api/permissions'
 import { useAuthStore } from '../stores/authStore'
+import { UserAvatar } from './UserAvatar'
+import { AddBotButton } from './AddBotButton'
+import { getUserDisplayName } from '../utils/user'
 import type { ChannelMemberWithUser } from '../types'
 
 interface MemberListProps {
@@ -42,17 +45,22 @@ function MemberItem({
   onRemove: () => void
   isRemoving: boolean
 }) {
-  const displayName =
-    member.user?.display_name ?? member.user?.username ?? member.user_id.slice(0, 8)
+  const displayName = getUserDisplayName(
+    member.user?.display_name,
+    member.user?.username,
+    member.user_id,
+  )
   const canRemove =
     isChannelOwner && !isCurrentUser && member.role !== 'owner'
 
   return (
     <div className="flex items-center justify-between rounded-lg px-3 py-2 transition-colors hover:bg-zinc-800/50">
       <div className="flex items-center gap-3">
-        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-zinc-800">
-          <User className="h-3.5 w-3.5 text-zinc-400" />
-        </div>
+        <UserAvatar
+          avatarUrl={member.user?.avatar_url}
+          displayName={displayName}
+          size="sm"
+        />
         <div className="flex items-center gap-2">
           <span className="text-sm text-zinc-200">
             {displayName}
@@ -105,8 +113,18 @@ export function MemberList({ channelId }: MemberListProps) {
   const channelOwner = members.find((m) => m.role === 'owner')
   const isChannelOwner = channelOwner?.user_id === user?.id
 
+  const memberUserIds = new Set(members.map((m) => m.user_id))
+
   return (
     <div className="flex flex-col gap-0.5">
+      {isChannelOwner && (
+        <div className="mb-1">
+          <AddBotButton
+            channelId={channelId}
+            memberUserIds={memberUserIds}
+          />
+        </div>
+      )}
       {members.map((member) => (
         <MemberItem
           key={member.id}

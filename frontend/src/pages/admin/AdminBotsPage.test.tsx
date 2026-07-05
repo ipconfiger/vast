@@ -34,6 +34,7 @@ vi.mock('../../api/admin', () => ({
 function makeBot(over: Partial<Bot> = {}): Bot {
   return {
     id: 'bot-1',
+    user_id: 'u-bot-1',
     name: 'hermes',
     display_name: 'Hermes Assistant',
     api_url: 'https://hermes.example.com',

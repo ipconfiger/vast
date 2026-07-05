@@ -152,3 +152,18 @@ export function useUpdateChannel() {
     },
   })
 }
+
+export function useAddBot() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: ({ channelId, botId }: { channelId: string; botId: string }) =>
+      apiClient<{ ok: boolean }>(`/channels/${channelId}/bots`, {
+        method: 'POST',
+        body: JSON.stringify({ bot_id: botId }),
+      }),
+    onSuccess: (_data, { channelId }) => {
+      queryClient.invalidateQueries({ queryKey: ['channel-members', channelId] })
+    },
+  })
+}
