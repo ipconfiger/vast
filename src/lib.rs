@@ -120,6 +120,7 @@ pub fn api_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/health", get(health_check))
         .route("/raw", get(api::messages::raw_proxy))
+        .route("/bots", get(api::channels::list_public_bots))
         .route(
             "/channels",
             get(api::channels::list_channels).post(api::channels::create_channel),

@@ -3,6 +3,23 @@ import { apiClient } from './client'
 import type { Channel, Message } from '../types'
 import { useMessageStore } from '../stores/messageStore'
 
+export interface PublicBot {
+  id: string
+  name: string
+  display_name: string
+}
+
+export async function listPublicBots(): Promise<PublicBot[]> {
+  return apiClient<PublicBot[]>('/bots')
+}
+
+export function usePublicBots() {
+  return useQuery({
+    queryKey: ['bots'],
+    queryFn: listPublicBots,
+  })
+}
+
 export function useChannels() {
   return useQuery({
     queryKey: ['channels'],

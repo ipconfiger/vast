@@ -20,6 +20,7 @@ use crate::AppState;
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/bots", get(channels::list_public_bots))
         .route("/channels", get(channels::list_channels).post(channels::create_channel))
         .route("/channels/discover", get(channels::discover_channels))
         .route("/channels/{id}", get(channels::get_channel).patch(channels::update_channel))

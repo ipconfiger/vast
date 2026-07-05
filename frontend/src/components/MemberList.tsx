@@ -113,16 +113,11 @@ export function MemberList({ channelId }: MemberListProps) {
   const channelOwner = members.find((m) => m.role === 'owner')
   const isChannelOwner = channelOwner?.user_id === user?.id
 
-  const memberUserIds = new Set(members.map((m) => m.user_id))
-
   return (
     <div className="flex flex-col gap-0.5">
       {isChannelOwner && (
         <div className="mb-1">
-          <AddBotButton
-            channelId={channelId}
-            memberUserIds={memberUserIds}
-          />
+          <AddBotButton channelId={channelId} />
         </div>
       )}
       {members.map((member) => (

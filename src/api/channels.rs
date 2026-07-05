@@ -76,6 +76,13 @@ pub struct DiscoverChannel {
     pub is_member: bool,
 }
 
+#[derive(Debug, Serialize, FromRow)]
+pub struct PublicBot {
+    pub id: String,
+    pub name: String,
+    pub display_name: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct DiscoverChannelResponse {
     pub channels: Vec<DiscoverChannel>,
@@ -375,6 +382,23 @@ pub async fn unarchive_channel(
         .broadcast_to_channel(&id, &crate::ws::protocol::ServerEvent::ChannelUnarchived { channel_id });
 
     Ok(StatusCode::OK)
+}
+
+/// GET /api/bots
+///
+/// List active bots (id, name, display_name) for any logged-in user.
+/// No secrets (api_key, api_url, system_prompt, model) are exposed.
+pub async fn list_public_bots(
+    State(state): State<Arc<AppState>>,
+    _user: AuthenticatedUser,
+) -> Result<Json<Vec<PublicBot>>, AppError> {
+    let bots = sqlx::query_as::<_, PublicBot>(
+        "SELECT id, name, display_name FROM bots WHERE is_active = 1 ORDER BY name ASC",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    Ok(Json(bots))
 }
 
 /// POST /api/channels/{id}/bots
@@ -1652,5 +1676,107 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── Public bot list ───────────────────────────────────────────────
+
+    async fn insert_bot(
+        pool: &sqlx::SqlitePool,
+        name: &str,
+        display_name: &str,
+        is_active: bool,
+    ) -> String {
+        let bot_user_id = Uuid::new_v4().to_string();
+        let password_hash = crate::auth::hash_password("botpass").expect("hash");
+        sqlx::query("INSERT INTO users (id, username, password_hash, is_bot) VALUES (?, ?, ?, 1)")
+            .bind(&bot_user_id)
+            .bind(format!("botuser_{}", name))
+            .bind(&password_hash)
+            .execute(pool)
+            .await
+            .expect("insert bot user");
+
+        let bot_id = Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().timestamp();
+        sqlx::query("INSERT INTO bots (id, user_id, name, display_name, api_url, api_key, system_prompt, model, is_active, created_at) VALUES (?, ?, ?, ?, 'https://example.com', 'secret-key', 'private-prompt', 'hermes', ?, ?)")
+            .bind(&bot_id)
+            .bind(&bot_user_id)
+            .bind(name)
+            .bind(display_name)
+            .bind(if is_active { 1 } else { 0 })
+            .bind(now)
+            .execute(pool)
+            .await
+            .expect("insert bot");
+        bot_id
+    }
+
+    #[tokio::test]
+    async fn test_list_public_bots_returns_only_active_and_no_secrets() {
+        let (mut app, pool, _, token) = setup().await;
+
+        insert_bot(&pool, "alpha", "Alpha Bot", true).await;
+        insert_bot(&pool, "beta", "Beta Bot", true).await;
+        insert_bot(&pool, "gamma", "Gamma Bot", false).await;
+
+        let resp = request(&mut app, Method::GET, "/bots", None, &token).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let arr = body.as_array().unwrap();
+        assert_eq!(arr.len(), 2, "inactive bot must be excluded");
+
+        let names: Vec<&str> = arr.iter().map(|b| b["name"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["alpha", "beta"], "ordered by name ascending");
+
+        for b in arr {
+            let obj = b.as_object().unwrap();
+            assert!(obj.contains_key("id"));
+            assert!(obj.contains_key("name"));
+            assert!(obj.contains_key("display_name"));
+            assert!(
+                !obj.contains_key("api_key"),
+                "api_key must not be exposed publicly",
+            );
+            assert!(
+                !obj.contains_key("api_url"),
+                "api_url must not be exposed publicly",
+            );
+            assert!(
+                !obj.contains_key("system_prompt"),
+                "system_prompt must not be exposed publicly",
+            );
+            assert!(!obj.contains_key("model"));
+            assert!(!obj.contains_key("user_id"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_public_bots_requires_auth() {
+        let (mut app, _, _, _) = setup().await;
+
+        let resp = request(&mut app, Method::GET, "/bots", None, "").await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_list_public_bots_empty_when_none() {
+        let (mut app, _, _, token) = setup().await;
+
+        let resp = request(&mut app, Method::GET, "/bots", None, &token).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body.as_array().unwrap().len(), 0);
     }
 }
