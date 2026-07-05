@@ -44,11 +44,15 @@ struct BotConfig {
     id: String,
     user_id: String,
     name: String,
+    #[allow(dead_code)]
+    display_name: String,
     api_url: String,
     api_key: String,
     system_prompt: String,
     model: String,
 }
+
+type BotRow = (String, String, String, String, String, String, String, String);
 
 // ---------------------------------------------------------------------------
 // Request / Response types
@@ -727,9 +731,9 @@ async fn spawn_bot_mentions(
         return;
     }
 
-    let bots: Vec<(String, String, String, String, String, String, String)> =
+    let bots: Vec<BotRow> =
         sqlx::query_as(
-            "SELECT b.id, b.user_id, b.name, b.api_url, b.api_key, b.system_prompt, b.model
+            "SELECT b.id, b.user_id, b.name, b.display_name, b.api_url, b.api_key, b.system_prompt, b.model
              FROM bots b
              JOIN channel_members cm ON cm.user_id = b.user_id AND cm.channel_id = ?
              WHERE b.is_active = 1",
@@ -742,9 +746,12 @@ async fn spawn_bot_mentions(
     let pool = state.pool.clone();
     let ws_pool = state.ws_pool.clone();
 
-    for (bot_id, bot_user_id, bot_name, api_url, api_key, system_prompt, model) in bots {
-        let mention = format!("@{}", bot_name.to_lowercase());
-        if !content_text.contains(&mention) {
+    for (bot_id, bot_user_id, bot_name, bot_display_name, api_url, api_key, system_prompt, model) in bots {
+        let mention_name = format!("@{}", bot_name.to_lowercase());
+        let matches_name = content_text.contains(&mention_name);
+        let matches_display = !bot_display_name.is_empty()
+            && content_text.contains(&format!("@{}", bot_display_name.to_lowercase()));
+        if !matches_name && !matches_display {
             continue;
         }
 
@@ -764,6 +771,7 @@ async fn spawn_bot_mentions(
             id: bot_id,
             user_id: bot_user_id,
             name: bot_name,
+            display_name: bot_display_name,
             api_url,
             api_key,
             system_prompt,
@@ -890,9 +898,9 @@ async fn trigger_chain_mentions(
     }
     let segment_lower = segment.to_lowercase();
 
-    let other_bots: Vec<(String, String, String, String, String, String, String)> =
+    let other_bots: Vec<BotRow> =
         sqlx::query_as(
-            "SELECT b.id, b.user_id, b.name, b.api_url, b.api_key, b.system_prompt, b.model
+            "SELECT b.id, b.user_id, b.name, b.display_name, b.api_url, b.api_key, b.system_prompt, b.model
              FROM bots b
              JOIN channel_members cm ON cm.user_id = b.user_id AND cm.channel_id = ?
              WHERE b.is_active = 1 AND b.id != ?",
@@ -903,9 +911,12 @@ async fn trigger_chain_mentions(
         .await
         .unwrap_or_default();
 
-    for (id, user_id, name, api_url, api_key, system_prompt, model) in other_bots {
-        let mention = format!("@{}", name.to_lowercase());
-        if !segment_lower.contains(&mention) {
+    for (id, user_id, name, display_name, api_url, api_key, system_prompt, model) in other_bots {
+        let mention_name = format!("@{}", name.to_lowercase());
+        let matches_name = segment_lower.contains(&mention_name);
+        let matches_display = !display_name.is_empty()
+            && segment_lower.contains(&format!("@{}", display_name.to_lowercase()));
+        if !matches_name && !matches_display {
             continue;
         }
 
@@ -919,7 +930,7 @@ async fn trigger_chain_mentions(
         cd.insert(key, std::time::Instant::now());
         drop(cd);
 
-        let other = BotConfig { id, user_id, name, api_url, api_key, system_prompt, model };
+        let other = BotConfig { id, user_id, name, display_name, api_url, api_key, system_prompt, model };
         Box::pin(trigger_bot_response(
             pool.clone(),
             ws_pool.clone(),
@@ -1907,6 +1918,7 @@ mod tests {
             id: "bot-id".to_string(),
             user_id: bot_user_id.clone(),
             name: "name".to_string(),
+            display_name: String::new(),
             api_url: "http://127.0.0.1:1".to_string(),
             api_key: String::new(),
             system_prompt: String::new(),
