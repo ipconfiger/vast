@@ -59,7 +59,7 @@ function ChannelHeader({ channelId }: { channelId: string }) {
   const user = useAuthStore((s) => s.user)
   const [showSettings, setShowSettings] = useState(false)
 
-  const isOwner = channel?.created_by === user?.id
+  const isOwner = channel?.owner_id === user?.id
 
   if (isLoading) {
     return (

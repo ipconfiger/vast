@@ -32,7 +32,7 @@ export function ChannelSettingsModal({
   const [description, setDescription] = useState('')
   const [hasChanges, setHasChanges] = useState(false)
 
-  const isOwner = channel?.created_by === user?.id
+  const isOwner = channel?.owner_id === user?.id
 
   useEffect(() => {
     if (channel) {
