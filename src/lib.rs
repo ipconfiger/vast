@@ -1,5 +1,6 @@
 pub mod api;
 pub mod auth;
+pub mod bot;
 pub mod db;
 pub mod embed;
 pub mod error;
