@@ -14,6 +14,7 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { ToastContainer } from './components/ToastContainer'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useWebSocket } from './hooks/useWebSocket'
+import { useUnreadTracker } from './hooks/useUnreadTracker'
 import AdminGuard from './components/admin/AdminGuard'
 import AdminPublicRouteGuard from './components/admin/AdminPublicRouteGuard'
 import AdminLayout from './components/admin/AdminLayout'
@@ -26,6 +27,7 @@ import AdminAuditLogsPage from './pages/admin/AdminAuditLogsPage'
 function AppLayout() {
   useKeyboardShortcuts()
   useWebSocket()
+  useUnreadTracker()
   return (
     <>
       <Outlet />
