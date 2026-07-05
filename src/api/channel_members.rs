@@ -37,11 +37,24 @@ fn default_member_role() -> String {
 }
 
 #[derive(Serialize)]
-struct MemberResponse {
-    user_id: String,
+struct UserResponse {
+    id: String,
     username: String,
+    display_name: String,
+    avatar_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+    created_at: i64,
+}
+
+#[derive(Serialize)]
+struct MemberResponse {
+    id: String,
+    channel_id: String,
+    user_id: String,
     role: String,
     joined_at: i64,
+    user: UserResponse,
 }
 
 #[derive(Deserialize)]
@@ -193,8 +206,8 @@ async fn list_members(
 ) -> ApiResult<Vec<MemberResponse>> {
     require_membership(&state.pool, &auth.0, &channel_id).await?;
 
-    let members = sqlx::query_as::<_, (String, String, String, i64)>(
-        "SELECT cm.user_id, u.username, cm.role, cm.joined_at
+    let members = sqlx::query_as::<_, (String, String, String, String, String, String, Option<String>, i64, i64)>(
+        "SELECT cm.channel_id, cm.user_id, cm.role, u.id, u.username, u.display_name, u.avatar_url, u.created_at, cm.joined_at
          FROM channel_members cm
          JOIN users u ON u.id = cm.user_id
          WHERE cm.channel_id = ?
@@ -204,11 +217,24 @@ async fn list_members(
     .fetch_all(&state.pool)
     .await?
     .into_iter()
-    .map(|(user_id, username, role, joined_at)| MemberResponse {
-        user_id,
-        username,
-        role,
-        joined_at,
+    .map(|(channel_id, user_id, role, uid, username, display_name, avatar_url, created_at, joined_at)| {
+        // Generate a synthetic ID using channel_id and user_id
+        let id = format!("{}:{}", channel_id, user_id);
+        MemberResponse {
+            id,
+            channel_id,
+            user_id,
+            role,
+            joined_at,
+            user: UserResponse {
+                id: uid,
+                username,
+                display_name,
+                avatar_url,
+                status: None,
+                created_at,
+            },
+        }
     })
     .collect();
 
