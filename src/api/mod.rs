@@ -25,6 +25,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/channels/{id}", get(channels::get_channel).patch(channels::update_channel))
         .route("/channels/{id}/archive", post(channels::archive_channel))
         .route("/channels/{id}/unarchive", post(channels::unarchive_channel))
+        .route("/channels/{channel_id}/bots", post(channels::add_bot_to_channel))
         .route("/channels/{channel_id}/messages", get(messages::get_messages).post(messages::send_message))
         .route(
             "/channels/{channel_id}/messages/{msg_id}/thread",
