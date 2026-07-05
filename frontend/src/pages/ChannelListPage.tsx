@@ -1,9 +1,12 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
+import { Settings } from 'lucide-react'
 import { useParams, useNavigate } from 'react-router'
+import { ChannelSettingsModal } from '../components/ChannelSettingsModal'
 import { ChannelSidebarToggle } from '../components/ChannelSidebar'
 import { MessageList } from '../components/MessageList'
 import { MessageInput } from '../components/MessageInput'
 import { TypingIndicator } from '../components/TypingIndicator'
+import { useAuthStore } from '../stores/authStore'
 import { useChannelStore } from '../stores/channelStore'
 import { useChannel } from '../api/channels'
 import { useWebSocket } from '../hooks/useWebSocket'
@@ -53,6 +56,10 @@ export function ChannelListPage() {
 
 function ChannelHeader({ channelId }: { channelId: string }) {
   const { data: channel, isLoading } = useChannel(channelId)
+  const user = useAuthStore((s) => s.user)
+  const [showSettings, setShowSettings] = useState(false)
+
+  const isOwner = channel?.created_by === user?.id
 
   if (isLoading) {
     return (
@@ -63,13 +70,32 @@ function ChannelHeader({ channelId }: { channelId: string }) {
   }
 
   return (
-    <div className="flex items-center gap-2 border-b border-zinc-800 px-6 py-3">
-      <h1 className="font-semibold text-sm text-zinc-100">
-        {channel?.name ? `# ${channel.name}` : `# ${channelId.slice(0, 8)}`}
-      </h1>
-      {channel?.description && (
-        <span className="text-xs text-zinc-500">— {channel.description}</span>
+    <>
+      <div className="flex items-center gap-2 border-b border-zinc-800 px-6 py-3">
+        <h1 className="font-semibold text-sm text-zinc-100">
+          {channel?.name ? `# ${channel.name}` : `# ${channelId.slice(0, 8)}`}
+        </h1>
+        {channel?.description && (
+          <span className="text-xs text-zinc-500">— {channel.description}</span>
+        )}
+        {isOwner && (
+          <button
+            onClick={() => setShowSettings(true)}
+            title="Channel settings"
+            aria-label="Channel settings"
+            className="ml-auto rounded-md p-1 text-zinc-500 hover:text-zinc-300 transition-colors"
+          >
+            <Settings className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+      {showSettings && isOwner && (
+        <ChannelSettingsModal
+          channelId={channelId}
+          isOpen={showSettings}
+          onClose={() => setShowSettings(false)}
+        />
       )}
-    </div>
+    </>
   )
 }
