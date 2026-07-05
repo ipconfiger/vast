@@ -18,6 +18,8 @@ use crate::auth::{self, admin::AdminAuthenticatedUser, TokenPair};
 use crate::error::{created_response, no_content, ok_response, AppError};
 use crate::AppState;
 
+pub mod bots;
+
 // ---------------------------------------------------------------------------
 // Request / response types
 // ---------------------------------------------------------------------------
@@ -793,6 +795,7 @@ pub fn admin_routes() -> Router<Arc<AppState>> {
                 ),
         )
         .route("/audit-logs", get(list_audit_logs))
+        .nest("/bots", bots::bot_routes())
 }
 
 // ===========================================================================
