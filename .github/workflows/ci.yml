@@ -49,14 +49,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       - name: Install dependencies
-        run: bun install
+        run: npm install --legacy-peer-deps
 
       - name: Run tests
-        run: bun run test
+        run: npx vitest run
 
       - name: Build frontend
-        run: bun run build
+        run: npm run build
