@@ -7,6 +7,7 @@ import { useChannelStore } from '../stores/channelStore'
 import { usePresenceStore } from '../stores/presenceStore'
 import { useUserStore } from '../stores/userStore'
 import { useAuthStore } from '../stores/authStore'
+import { useUnreadStore } from '../stores/unreadStore'
 import { useAuthImage } from '../hooks/useAuthImage'
 import { ChannelListSkeleton } from './Skeletons'
 import { NoChannelsEmpty } from './EmptyState'
@@ -26,7 +27,7 @@ function ChannelIcon({ type }: { type: Channel['type'] }) {
   }
 }
 
-function ChannelItem({
+export function ChannelItem({
   channel,
   isActive,
   onClick,
@@ -35,6 +36,7 @@ function ChannelItem({
   isActive: boolean
   onClick: () => void
 }) {
+  const unread = useUnreadStore((s) => s.unreadByChannel[channel.id] ?? 0)
   return (
     <button
       onClick={onClick}
@@ -46,6 +48,11 @@ function ChannelItem({
     >
       <ChannelIcon type={channel.type} />
       <span className="truncate">{channel.name}</span>
+      {unread > 0 && !isActive && (
+        <span className="ml-auto inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 text-xs font-medium text-white bg-red-500 rounded-full">
+          {unread > 99 ? '99+' : unread}
+        </span>
+      )}
     </button>
   )
 }
@@ -60,7 +67,7 @@ function dmDisplayName(dm: DmChannel, currentUsername: string): string {
   return others.length > 0 ? others.join(', ') : dm.name
 }
 
-function DmItem({
+export function DmItem({
   dm,
   onClick,
 }: {
@@ -68,6 +75,7 @@ function DmItem({
   onClick: () => void
 }) {
   const currentUsername = useAuthStore((s) => s.user?.username ?? '')
+  const unread = useUnreadStore((s) => s.unreadByChannel[dm.id] ?? 0)
   return (
     <button
       onClick={onClick}
@@ -75,6 +83,11 @@ function DmItem({
     >
       <Users className="h-4 w-4 flex-shrink-0" />
       <span className="truncate">{dmDisplayName(dm, currentUsername)}</span>
+      {unread > 0 && (
+        <span className="ml-auto inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 text-xs font-medium text-white bg-red-500 rounded-full">
+          {unread > 99 ? '99+' : unread}
+        </span>
+      )}
     </button>
   )
 }
