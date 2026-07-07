@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router'
-import { Plus, Hash, Lock, Users, Loader2, Menu, X, Globe } from 'lucide-react'
+import { Plus, Hash, Lock, Users, Loader2, Menu, X, Globe, FolderOpen } from 'lucide-react'
 import { useChannels, useCreateChannel } from '../api/channels'
 import { useDms } from '../api/dm'
 import { useChannelStore } from '../stores/channelStore'
@@ -237,6 +237,10 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
         )}
 
         <div className="mt-auto border-t border-zinc-800 pt-3 px-3 pb-3">
+          <button onClick={() => { navigate('/files'); onClose?.() }} className="flex items-center gap-2 w-full rounded-md px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors">
+            <FolderOpen className="h-4 w-4" />
+            <span>Files</span>
+          </button>
           <button onClick={() => { navigate('/profile'); onClose?.() }} className="flex items-center gap-2 w-full rounded-md px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors">
             {avatarSrc ? (
               <img src={avatarSrc} className="h-7 w-7 rounded-full object-cover" />

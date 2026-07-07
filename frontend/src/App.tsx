@@ -4,6 +4,7 @@ import { createBrowserRouter, RouterProvider, Outlet } from 'react-router'
 import { ChannelListPage } from './pages/ChannelListPage'
 import { RequestsPage } from './pages/RequestsPage'
 import { SearchPage } from './pages/SearchPage'
+import { FilesPage } from './pages/FilesPage'
 import { DirectMessagePage } from './pages/DirectMessagePage'
 import ProfilePage from './pages/ProfilePage'
 import { ThreadView } from './pages/ThreadView'
@@ -91,6 +92,10 @@ const router = createBrowserRouter([
           {
             path: '/search',
             element: <SearchPage />,
+          },
+          {
+            path: '/files',
+            element: <FilesPage />,
           },
           {
             path: '/',
