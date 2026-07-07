@@ -18,6 +18,10 @@ pub enum ServerEvent {
         channel_id: String,
         cursor: i64,
     },
+    FileDeleted {
+        file_id: String,
+        channel_id: String,
+    },
     ReactionUpdate {
         channel_id: String,
         message_cursor: i64,

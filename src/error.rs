@@ -23,6 +23,7 @@ pub enum AppError {
     Unauthorized(String),
     Forbidden(String),
     NotFound(String),
+    Gone(String),
     Conflict(String),
     ValidationError(String),
     PayloadTooLarge(String),
@@ -37,6 +38,7 @@ impl AppError {
             AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             AppError::Forbidden(_) => StatusCode::FORBIDDEN,
             AppError::NotFound(_) => StatusCode::NOT_FOUND,
+            AppError::Gone(_) => StatusCode::GONE,
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::ValidationError(_) => StatusCode::UNPROCESSABLE_ENTITY,
             AppError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
@@ -51,6 +53,7 @@ impl AppError {
             AppError::Unauthorized(_) => "UNAUTHORIZED",
             AppError::Forbidden(_) => "FORBIDDEN",
             AppError::NotFound(_) => "NOT_FOUND",
+            AppError::Gone(_) => "FILE_DELETED",
             AppError::Conflict(_) => "CONFLICT",
             AppError::ValidationError(_) => "VALIDATION_ERROR",
             AppError::PayloadTooLarge(_) => "PAYLOAD_TOO_LARGE",
@@ -66,7 +69,8 @@ impl std::fmt::Display for AppError {
             AppError::BadRequest(m)
             | AppError::Unauthorized(m)
             | AppError::Forbidden(m)
-            | AppError::NotFound(m)
+            |             AppError::NotFound(m)
+            | AppError::Gone(m)
             | AppError::Conflict(m)
             | AppError::ValidationError(m)
             | AppError::PayloadTooLarge(m)

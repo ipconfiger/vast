@@ -167,12 +167,13 @@ pub fn api_routes() -> Router<Arc<AppState>> {
             get(api::votes::get_vote),
         )
         .route("/votes/{vote_id}/vote", post(api::votes::cast_vote))
+        .route("/files", get(api::files::list_files))
         .route(
             "/files/upload",
             post(api::files::upload_file)
                 .layer(RequestBodyLimitLayer::new(api::files::MAX_UPLOAD_SIZE)),
         )
-        .route("/files/{file_id}", get(api::files::download_file))
+        .route("/files/{file_id}", get(api::files::download_file).delete(api::files::delete_file))
         .route(
             "/messages/{message_id}/reactions",
             get(api::reactions::get_reactions).post(api::reactions::add_reaction),
