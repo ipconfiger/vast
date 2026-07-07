@@ -246,6 +246,15 @@ function useWsEventSync(manager: WebSocketManager): void {
         if (!ev || typeof ev.message_id !== 'string' || !ev.reaction) return
         useReactionStore.getState().removeReaction(ev.message_id, ev.reaction.id)
       }),
+      manager.subscribe('file_deleted', (data) => {
+        const ev = data as { file_id: string; channel_id: string }
+        if (!ev || typeof ev.file_id !== 'string') return
+        window.dispatchEvent(new CustomEvent('file-deleted', { detail: ev }))
+        queryClient.invalidateQueries({ queryKey: ['files'] })
+        if (ev.channel_id) {
+          queryClient.invalidateQueries({ queryKey: ['messages', ev.channel_id] })
+        }
+      }),
       manager.subscribe('typing_start', (data) => {
         const ev = data as { channel_id: string; user_id: string }
         if (!ev || typeof ev.channel_id !== 'string' || typeof ev.user_id !== 'string') return

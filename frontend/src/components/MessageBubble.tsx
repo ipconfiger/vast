@@ -1,7 +1,10 @@
+import { useState, useEffect } from 'react'
 import type { Message } from '../types'
-import { FileText, Download, Check, X, UserPlus, Loader2, Bot } from 'lucide-react'
+import { FileText, Download, Check, X, UserPlus, Loader2, Bot, Trash2 } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../api/client'
+import { useDeleteFile } from '../api/files'
+import { useAuthStore } from '../stores/authStore'
 import { useAuthImage } from '../hooks/useAuthImage'
 import { TextMessage } from './TextMessage'
 import { CodeMessage } from './CodeMessage'
@@ -19,6 +22,7 @@ function formatSize(bytes: number): string {
 
 function FileMessage({
   payload,
+  message,
 }: {
   payload?: {
     file_id?: string
@@ -27,12 +31,70 @@ function FileMessage({
     size?: number
     mime_type?: string
   }
+  message: Message
 }) {
+  const fileId = payload?.file_id
+  const currentUserId = useAuthStore((s) => s.user?.id)
+  const deleteFile = useDeleteFile()
+  const [isDeleted, setIsDeleted] = useState(false)
+
   const name = payload?.original_name || 'Unknown file'
   const url = payload?.url || '#'
   const isImage = payload?.mime_type?.startsWith('image/')
   // blob URL + URL.revokeObjectURL on unmount are owned by useAuthImage
-  const imgSrc = useAuthImage(isImage && url !== '#' ? url : null)
+  const imgSrc = useAuthImage(isImage && url !== '#' && !isDeleted ? url : null)
+
+  useEffect(() => {
+    if (!fileId) return
+    let cancelled = false
+    const token = useAuthStore.getState().token
+    const controller = new AbortController()
+
+    fetch(`/api/files/${fileId}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      signal: controller.signal,
+    })
+      .then((res) => {
+        if (cancelled) return
+        setIsDeleted(res.status === 410)
+        controller.abort()
+      })
+      .catch((err) => {
+        if (cancelled) return
+        if (err.name !== 'AbortError') {
+          setIsDeleted(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [fileId])
+
+  useEffect(() => {
+    if (!fileId) return
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{ file_id: string; channel_id: string }>
+      if (ce.detail?.file_id === fileId) {
+        setIsDeleted(true)
+      }
+    }
+    window.addEventListener('file-deleted', handler)
+    return () => window.removeEventListener('file-deleted', handler)
+  }, [fileId])
+
+  if (isDeleted) {
+    return (
+      <div className="inline-flex items-center gap-3 rounded-lg border border-zinc-700/50 bg-zinc-800/30 p-3 max-w-sm opacity-60">
+        <FileText className="h-8 w-8 text-zinc-500 flex-shrink-0" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm text-zinc-500 truncate">{name}</p>
+          <p className="text-xs text-zinc-600">该文件已被发布者删除</p>
+        </div>
+      </div>
+    )
+  }
 
   if (isImage) {
     return (
@@ -62,6 +124,22 @@ function FileMessage({
           <p className="text-xs text-zinc-500">{formatSize(payload.size)}</p>
         )}
       </div>
+      {currentUserId === message.sender_id && fileId && (
+        <button
+          onClick={async (e) => {
+            e.preventDefault()
+            if (confirm('确定要删除这个文件吗？')) {
+              await deleteFile.mutateAsync(fileId)
+              setIsDeleted(true)
+            }
+          }}
+          className="flex-shrink-0 p-1.5 rounded-md text-zinc-400 hover:text-red-400 hover:bg-red-500/10"
+          disabled={deleteFile.isPending}
+          title="删除文件"
+        >
+          <Trash2 className="h-4 w-4" />
+        </button>
+      )}
       <a
         href={url}
         target="_blank"
@@ -212,7 +290,7 @@ export function MessageBubble({
         }
         return <TextMessage text={typeof message.payload === 'string' ? message.payload : message.payload?.text ?? ''} />
       case 'file':
-        return <FileMessage payload={message.payload} />
+        return <FileMessage payload={message.payload} message={message} />
       case 'code':
         return <CodeMessage language={message.payload?.language ?? 'plaintext'} code={message.payload?.code ?? ''} filename={message.payload?.filename} />
       default:
