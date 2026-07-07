@@ -122,3 +122,43 @@ export interface Vote {
   myVote: string | null
   createdAt: number
 }
+
+export interface FileRecord {
+  id: string
+  uploader_id: string
+  uploader_name: string
+  uploader_display_name: string
+  uploader_avatar_url: string
+  channel_id: string | null
+  channel_name?: string
+  original_name: string
+  size: number
+  mime_type: string
+  extension: string
+  is_deleted: boolean
+  deleted_at: number | null
+  deleted_by: string | null
+  created_at: number
+}
+
+export interface FileListResponse {
+  files: FileRecord[]
+  next_cursor: string
+  has_more: boolean
+}
+
+export interface FileFilters {
+  channel_id?: string
+  uploader_id?: string
+  mime_type?: string
+  mime_prefix?: string
+  size_min?: number
+  size_max?: number
+  created_after?: number
+  created_before?: number
+  search?: string
+  sort_by?: 'created_at' | 'size' | 'name'
+  sort_order?: 'asc' | 'desc'
+  cursor?: string
+  limit?: number
+}
