@@ -28,6 +28,7 @@ function makeChannel(overrides: Partial<Channel> = {}): Channel {
     type: 'public',
     created_by: 'u-1',
     created_at: '',
+    is_archived: false,
     ...overrides,
   }
 }

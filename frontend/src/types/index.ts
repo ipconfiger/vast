@@ -17,6 +17,7 @@ export interface Channel {
   member_count?: number
   owner_id?: string
   role?: string
+  is_archived: boolean
 }
 
 export interface ChannelMember {

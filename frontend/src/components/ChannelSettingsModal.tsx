@@ -7,7 +7,7 @@ import {
   ArchiveRestore,
 } from 'lucide-react'
 import { useChannel } from '../api/channels'
-import { useUpdateChannel } from '../api/permissions'
+import { useUpdateChannel, useArchiveChannel, useUnarchiveChannel } from '../api/permissions'
 import { useAuthStore } from '../stores/authStore'
 import { MemberList } from './MemberList'
 
@@ -26,6 +26,8 @@ export function ChannelSettingsModal({
 }: ChannelSettingsModalProps) {
   const { data: channel, isLoading } = useChannel(channelId)
   const updateChannel = useUpdateChannel()
+  const archiveChannel = useArchiveChannel()
+  const unarchiveChannel = useUnarchiveChannel()
   const user = useAuthStore((s) => s.user)
   const [activeTab, setActiveTab] = useState<Tab>('general')
   const [name, setName] = useState('')
@@ -66,11 +68,11 @@ export function ChannelSettingsModal({
   }
 
   const handleArchiveToggle = () => {
-    const targetArchived = !(channel as { archived?: boolean }).archived
-    updateChannel.mutate({
-      channelId,
-      data: { archived: targetArchived },
-    })
+    if (channel?.is_archived) {
+      unarchiveChannel.mutate(channelId)
+    } else {
+      archiveChannel.mutate(channelId)
+    }
   }
 
   if (!isOpen) return null
@@ -193,28 +195,28 @@ export function ChannelSettingsModal({
                 <div className="space-y-4">
                   <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-4">
                     <h3 className="text-sm font-medium text-red-400">
-                      {(channel as { archived?: boolean }).archived
+                      {channel?.is_archived
                         ? 'Restore Channel'
                         : 'Archive Channel'}
                     </h3>
                     <p className="mt-1 text-xs text-zinc-500">
-                      {(channel as { archived?: boolean }).archived
+                      {channel?.is_archived
                         ? 'Restoring will make the channel active again.'
                         : 'Archiving will disable new messages. This action can be reversed.'}
                     </p>
                     <button
                       onClick={handleArchiveToggle}
-                      disabled={updateChannel.isPending}
+                      disabled={archiveChannel.isPending || unarchiveChannel.isPending}
                       className="mt-3 flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2 text-sm text-red-400 transition-colors hover:bg-red-500/20 disabled:opacity-50"
                     >
-                      {updateChannel.isPending ? (
+                      {archiveChannel.isPending || unarchiveChannel.isPending ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (channel as { archived?: boolean }).archived ? (
+                      ) : channel?.is_archived ? (
                         <ArchiveRestore className="h-4 w-4" />
                       ) : (
                         <Archive className="h-4 w-4" />
                       )}
-                      {(channel as { archived?: boolean }).archived
+                      {channel?.is_archived
                         ? 'Restore Channel'
                         : 'Archive Channel'}
                     </button>

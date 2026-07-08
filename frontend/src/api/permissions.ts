@@ -140,13 +140,37 @@ export function useUpdateChannel() {
       data,
     }: {
       channelId: string
-      data: { name?: string; description?: string; archived?: boolean }
+      data: { name?: string; description?: string }
     }) =>
       apiClient<void>(`/channels/${channelId}`, {
         method: 'PATCH',
         body: JSON.stringify(data),
       }),
     onSuccess: (_data, { channelId }) => {
+      queryClient.invalidateQueries({ queryKey: ['channel', channelId] })
+      queryClient.invalidateQueries({ queryKey: ['channels'] })
+    },
+  })
+}
+
+export function useArchiveChannel() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (channelId: string) =>
+      apiClient<void>(`/channels/${channelId}/archive`, { method: 'POST' }),
+    onSuccess: (_data, channelId) => {
+      queryClient.invalidateQueries({ queryKey: ['channel', channelId] })
+      queryClient.invalidateQueries({ queryKey: ['channels'] })
+    },
+  })
+}
+
+export function useUnarchiveChannel() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (channelId: string) =>
+      apiClient<void>(`/channels/${channelId}/unarchive`, { method: 'POST' }),
+    onSuccess: (_data, channelId) => {
       queryClient.invalidateQueries({ queryKey: ['channel', channelId] })
       queryClient.invalidateQueries({ queryKey: ['channels'] })
     },

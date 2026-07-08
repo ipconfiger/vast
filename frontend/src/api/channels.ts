@@ -2,6 +2,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from './client'
 import type { Channel, Message } from '../types'
 import { useMessageStore } from '../stores/messageStore'
+import { useAuthStore } from '../stores/authStore'
+
+const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
 export interface PublicBot {
   id: string
@@ -89,6 +92,30 @@ export function useJoinChannel() {
     onSuccess: () => {
       queryClient.refetchQueries({ queryKey: ['discover-channels'] })
     },
+  })
+}
+
+export function downloadChannelArchive(channelId: string, channelName: string): Promise<void> {
+  const token = useAuthStore.getState().token
+  if (!token) {
+    console.error('Cannot download archive: not authenticated')
+    return Promise.resolve()
+  }
+  return fetch(`${API_BASE}/channels/${channelId}/archive/download`, {
+    headers: { Authorization: `Bearer ${token}` },
+  }).then(res => {
+    if (!res.ok) throw new Error('Download failed')
+    return res.blob()
+  }).then(blob => {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    const safeName = channelName.replace(/[\/\\:*?"<>|]/g, '_')
+    a.download = `${safeName}-archive.zip`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
   })
 }
 
