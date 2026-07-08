@@ -114,7 +114,7 @@ const RFC_5987_ENCODE_SET: &AsciiSet = &CONTROLS
 /// Sanitize filename for Content-Disposition header.
 /// Returns (safe_ascii_name, percent_encoded_name) for use with:
 /// `attachment; filename="<safe_ascii_name>"; filename*=UTF-8''<percent_encoded_name>`
-fn sanitize_filename_for_header(filename: &str) -> (String, String) {
+pub fn sanitize_filename_for_header(filename: &str) -> (String, String) {
     let safe_ascii = filename
         .chars()
         .filter(|c| !matches!(c, '"' | '\\' | '\r' | '\n'))

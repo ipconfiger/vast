@@ -12,6 +12,7 @@ use uuid::Uuid;
 use zip::write::{SimpleFileOptions, ZipWriter};
 use zip::CompressionMethod;
 
+use crate::api::files::sanitize_filename_for_header;
 use crate::auth::middleware::AuthenticatedUser;
 use crate::error::AppError;
 use crate::AppState;
@@ -388,6 +389,9 @@ pub async fn unarchive_channel(
     Ok(StatusCode::OK)
 }
 
+/// Maximum number of messages to include in a channel archive ZIP.
+const MAX_ARCHIVE_MESSAGES: i64 = 100_000;
+
 /// GET /api/channels/{id}/archive/download
 ///
 /// Download a ZIP archive containing all channel messages and files.
@@ -430,11 +434,21 @@ pub async fn download_channel_archive(
          FROM messages m \
          LEFT JOIN users u ON m.sender_id = u.id \
          WHERE m.channel_id = ? \
-         ORDER BY m.id ASC",
+         ORDER BY m.id ASC LIMIT ?",
     )
     .bind(&id)
+    .bind(MAX_ARCHIVE_MESSAGES)
     .fetch_all(&state.pool)
     .await?;
+
+    let message_count = message_rows.len();
+    if message_count as i64 == MAX_ARCHIVE_MESSAGES {
+        tracing::warn!(
+            channel_id = %id,
+            limit = MAX_ARCHIVE_MESSAGES,
+            "Archive message count hit limit — archive may be truncated"
+        );
+    }
 
     // ---- fetch non-deleted files ----
     let file_rows = sqlx::query_as::<_, ArchiveFileRow>(
@@ -450,7 +464,10 @@ pub async fn download_channel_archive(
         .into_iter()
         .map(|r| {
             let payload: serde_json::Value =
-                serde_json::from_str(&r.payload).unwrap_or(serde_json::Value::Null);
+                serde_json::from_str(&r.payload).unwrap_or_else(|e| {
+                    tracing::warn!(msg_id = %r.msg_id, error = %e, "Invalid message payload JSON in archive");
+                    serde_json::json!({"__corrupt": true, "__raw": &r.payload})
+                });
             ArchiveMessage {
                 msg_id: r.msg_id,
                 sender_id: r.sender_id,
@@ -468,77 +485,126 @@ pub async fn download_channel_archive(
         })
         .collect();
 
-    let info = ArchiveChannelInfo {
+    let mut info = ArchiveChannelInfo {
         channel_id: channel.id.clone(),
         name: channel.name.clone(),
         description: channel.description.clone(),
         owner_id: channel.owner_id.clone(),
         created_at: channel.created_at,
-        message_count: messages.len(),
-        file_count: file_rows.len(),
+        message_count,
+        file_count: file_rows.len(), // may be updated below
         exported_at: chrono::Utc::now().timestamp(),
     };
 
-    // ---- build ZIP archive in memory ----
-    let mut cursor = Cursor::new(Vec::new());
-    let mut archive = ZipWriter::new(&mut cursor);
-    let options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Deflated);
-
-    // messages.json
-    let messages_json = serde_json::to_vec_pretty(&messages)
-        .map_err(|e| AppError::Internal(format!("Failed to serialize messages: {e}")))?;
-    archive
-        .start_file("messages.json", options)
-        .map_err(|e| AppError::Internal(format!("ZIP error: {e}")))?;
-    archive
-        .write_all(&messages_json)
-        .map_err(|e| AppError::Internal(format!("ZIP write error: {e}")))?;
-
-    // channel_info.json
-    let info_json = serde_json::to_vec_pretty(&info)
-        .map_err(|e| AppError::Internal(format!("Failed to serialize channel info: {e}")))?;
-    archive
-        .start_file("channel_info.json", options)
-        .map_err(|e| AppError::Internal(format!("ZIP error: {e}")))?;
-    archive
-        .write_all(&info_json)
-        .map_err(|e| AppError::Internal(format!("ZIP write error: {e}")))?;
-
-    // files/
-    let mut name_counts: HashMap<String, usize> = HashMap::new();
+    // ---- pre-read files in async context (for spawn_blocking later) ----
     let upload_dir = state.config.data_dir.join("uploads");
+    let mut name_counts: HashMap<String, usize> = HashMap::new();
+    let mut file_entries: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut actual_file_count: usize = 0;
+    let mut skipped_count: usize = 0;
 
     for f in &file_rows {
+        // H4: validate file record fields before constructing disk path
+        if f.id.contains('/') || f.id.contains('\\') || f.id.contains("..")
+            || f.extension.contains('/') || f.extension.contains('\\') || f.extension.contains("..")
+        {
+            tracing::warn!(file_id = %f.id, extension = %f.extension, "Suspicious file record — skipping from archive");
+            skipped_count += 1;
+            continue;
+        }
         let file_path = upload_dir.join(format!("{}.{}", f.id, f.extension));
         match tokio::fs::read(&file_path).await {
             Ok(data) => {
-                let safe_name = dedup_filename(&f.original_name, &mut name_counts);
+                // C1: strip directory components from original_name to prevent Zip Slip
+                let base_name = std::path::Path::new(&f.original_name)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unnamed");
+                let safe_name = dedup_filename(base_name, &mut name_counts);
                 let zip_path = format!("files/{safe_name}");
-                if let Err(e) = archive.start_file(&zip_path, options) {
-                    tracing::warn!(file_id = %f.id, error = %e, "Failed to add file entry to ZIP");
-                    continue;
-                }
-                if let Err(e) = archive.write_all(&data) {
-                    tracing::warn!(file_id = %f.id, error = %e, "Failed to write file data to ZIP");
-                    continue;
-                }
+                file_entries.push((zip_path, data));
+                actual_file_count += 1;
             }
             Err(e) => {
                 tracing::warn!(file_id = %f.id, error = %e, "File missing on disk, skipping from archive");
+                skipped_count += 1;
             }
         }
     }
 
-    let _ = archive
-        .finish()
-        .map_err(|e| AppError::Internal(format!("ZIP error: {e}")))?;
-    let zip_bytes = cursor.into_inner();
+    // M1: update file_count to reflect actual files included
+    info.file_count = actual_file_count;
 
-    // ---- response headers ----
+    if skipped_count > 0 {
+        tracing::warn!(
+            actual = actual_file_count,
+            skipped = skipped_count,
+            "Some files skipped from archive"
+        );
+    }
+
+    // ---- serialize JSON in async context ----
+    let messages_json = serde_json::to_vec_pretty(&messages)
+        .map_err(|e| AppError::Internal(format!("Failed to serialize messages: {e}")))?;
+    let info_json = serde_json::to_vec_pretty(&info)
+        .map_err(|e| AppError::Internal(format!("Failed to serialize channel info: {e}")))?;
+
+    // ---- build ZIP archive in spawn_blocking (M6) ----
+    let zip_bytes = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, AppError> {
+        let mut cursor = Cursor::new(Vec::new());
+        let mut archive = ZipWriter::new(&mut cursor);
+        let options = SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Deflated);
+
+        // messages.json
+        archive
+            .start_file("messages.json", options)
+            .map_err(|e| AppError::Internal(format!("ZIP error: {e}")))?;
+        archive
+            .write_all(&messages_json)
+            .map_err(|e| AppError::Internal(format!("ZIP write error: {e}")))?;
+
+        // channel_info.json
+        archive
+            .start_file("channel_info.json", options)
+            .map_err(|e| AppError::Internal(format!("ZIP error: {e}")))?;
+        archive
+            .write_all(&info_json)
+            .map_err(|e| AppError::Internal(format!("ZIP write error: {e}")))?;
+
+        // files/
+        for (zip_path, data) in &file_entries {
+            if let Err(e) = archive.start_file(zip_path.as_str(), options) {
+                tracing::warn!(zip_path = %zip_path, error = %e, "Failed to add file entry to ZIP");
+                continue;
+            }
+            if let Err(e) = archive.write_all(data) {
+                tracing::warn!(zip_path = %zip_path, error = %e, "Failed to write file data to ZIP");
+                continue;
+            }
+        }
+
+        let _ = archive
+            .finish()
+            .map_err(|e| AppError::Internal(format!("ZIP error: {e}")))?;
+        Ok(cursor.into_inner())
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("ZIP construction panicked: {e}")))??;
+
+    // ---- response headers (H1: RFC 5987 Unicode-safe) ----
     let sanitized_name = sanitize_channel_name(&channel.name);
-    let content_disposition = format!("attachment; filename=\"{sanitized_name}-archive.zip\"");
-    let disposition_value = HeaderValue::try_from(content_disposition)
+    let archive_filename = format!("{sanitized_name}-archive.zip");
+    let (ascii_name, utf8_encoded) = sanitize_filename_for_header(&archive_filename);
+    let content_disposition = if ascii_name == utf8_encoded {
+        format!("attachment; filename=\"{}\"", ascii_name)
+    } else {
+        format!(
+            "attachment; filename=\"{}\"; filename*=UTF-8''{}",
+            ascii_name, utf8_encoded
+        )
+    };
+    let disposition_value = HeaderValue::try_from(&content_disposition)
         .map_err(|e| AppError::Internal(format!("Invalid header value: {e}")))?;
 
     Ok((
@@ -2052,7 +2118,7 @@ mod tests {
     ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
         let req = Request::builder()
             .method(Method::GET)
-            .uri(&format!("/channels/{channel_id}/archive/download"))
+            .uri(format!("/channels/{channel_id}/archive/download"))
             .header(header::AUTHORIZATION, format!("Bearer {token}"))
             .body(Body::empty())
             .unwrap();
@@ -2684,12 +2750,12 @@ mod tests {
         // Missing file is not in the archive
         assert!(archive.by_name("files/missing.txt").is_err());
 
-        // file_count in channel_info is still 2 (the DB count)
+        // file_count reflects actual files on disk, not DB count
         let info: Value = {
             let entry = archive.by_name("channel_info.json").unwrap();
             serde_json::from_reader(entry).unwrap()
         };
-        assert_eq!(info["file_count"], 2);
+        assert_eq!(info["file_count"], 1);
     }
 
     // 13. Channel name is sanitized in Content-Disposition filename.
