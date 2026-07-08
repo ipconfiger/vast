@@ -1,68 +1,75 @@
-# VAST — Real-time IM Server
+# VAST
 
-A full-featured instant messaging server with a modern React frontend. Built with **Axum** (Rust) on the backend and **React + Vite** (Bun) on the frontend.
+### A real-time IM server you can own.
 
-## Features
+VAST is a self-hosted instant messaging platform that ships as a **single binary** — Rust on the backend, React SPA embedded at compile time, and SQLite for zero-config persistence. No containers, no microservices, no cloud dependency. Just one process, one database file, and your own hardware.
 
-- **Real-time messaging** via WebSocket with presence indicators and typing notifications
-- **Channel-based conversations** — create public/private channels, archive/unarchive
-- **Thread support** — reply to messages in nested threads
-- **Direct Messages** — one-on-one conversations
-- **Reactions** — emoji reactions on any message
-- **File uploads** with attachment support
-- **Search** — full-text message search across channels
-- **Join requests & invitations** — access control for private channels
-- **JWT authentication** — register, login, token-based auth
-- **Admin console** — env-configured admin account, user management (disable / force-logout via token epoch), invite code management, dashboard stats, audit logging
-- **Unread message badges** — red count badges on channels and DMs in the sidebar
-- **AI Bot integration** — add Hermes Agent instances as virtual channel members; @mention them by name or display name to get AI-powered responses with full channel context
-- **Token epoch revocation** — disabling a user instantly invalidates all their active JWTs
-- **TLS support** — self-signed and Let's Encrypt modes
+---
 
-## Quick Start
+## Why I Built This
 
-### Prerequisites
+I wanted a team chat tool that didn't outsource its database, its auth, or its uptime to someone else's cloud. Something I could drop onto a $5 VPS and immediately have channels, threads, reactions, file sharing, and full-text search — without configuring Redis, without running a separate database server, without wrestling with Docker Compose.
 
-- [Rust](https://rustup.rs) 1.93+ (`rustc`, `cargo`)
-- [Bun](https://bun.sh) 1.2+ (`bun`)
+I also wanted an AI bot that actually lives in the channel, not in a separate sidebar. When you `@mention` a bot in VAST, it sees the same channel context you do — message history, participants, thread structure — and replies inline, in real time.
 
-### Setup
+So I built it. Rust + React + SQLite + WebSockets. One binary, one database file, zero bullshit.
 
-```bash
-# Clone the repository
-git clone <repo-url> && cd vast
+---
 
-# Copy environment configuration
-cp .env.example .env
-# Edit .env — especially JWT_SECRET (generate: openssl rand -base64 48)
+## What It Can Do
 
-# Start in development mode (backend + frontend concurrently)
-make dev
-```
+### Messaging
 
-The backend starts on **http://localhost:3000** and the frontend dev server on **http://localhost:5173** (proxying API and WebSocket to the backend).
+- **Channels** — public and private, with archive/unarchive + ZIP download for history export
+- **Threads** — nested replies that don't clutter the main channel view
+- **Direct Messages** — one-on-one conversations, private by default
+- **Reactions** — emoji reactions on any message (Slack-style, not Discord-style — pick any emoji, not just a fixed set)
+- **Typing indicators** and **presence** — see who's online and who's typing, live
 
-Admin console available at **http://localhost:5173/admin/login** (admin / admin123 in dev mode).
+### Files
 
-### Production Build
+- **Upload** with multipart support, up to 50 MiB by default (configurable)
+- **Indexed listing** with keyset pagination, grid/list views, and infinite scroll
+- **Soft delete** — files are marked deleted but recoverable; clients see 410 Gone for deleted files
+- **Access control** — files are scoped to the channel they were uploaded to
 
-```bash
-# Full release build
-./scripts/build.sh
+### Search
 
-# Binary is at: target/release/im-server
-# Frontend is embedded into the binary via rust-embed
-```
+- **Full-text search** across all channel messages
+- Indexed via SQLite FTS5, so it's fast even with tens of thousands of messages
+- Searches within the user's accessible channels only
 
-### Run the server
+### AI Bots
 
-```bash
-# Copy .env next to the binary and run:
-./target/release/im-server
+- **Channel-resident Hermes Agent bots** — add them as virtual channel members
+- **@mention activation** — bots only respond when explicitly called, by name or display name
+- **Full channel context** — message history, participants, and thread structure sent to the bot on each @mention
+- **OpenAI-compatible API** — works with any OpenAI-compatible endpoint (local LLMs, cloud APIs, anything)
+- **Admin-managed** — create, configure, test connectivity, add/remove from channels from the admin console
 
-# Or via TLS:
-TLS_MODE=self-signed ./target/release/im-server
-```
+### Access Control
+
+- **JWT authentication** — access + refresh token pair (15 min / 7 days), Argon2id password hashing
+- **Token epoch revocation** — disable a user and every JWT they hold is instantly invalid
+- **Invite codes** — admin-managed, with usage limits and enable/disable toggle
+- **Join requests** — for private channels; owners approve or reject
+- **Invitations** — channel owners can invite specific users directly
+
+### Admin Console
+
+A full admin panel isolated from the main app — separate JWT domain, separate login, so a compromised user token can't touch admin endpoints.
+
+- **Dashboard** — user count, channel count, message count at a glance
+- **User management** — disable, force-logout, reset password, delete
+- **Invite code management** — create, toggle, reset usage count, delete
+- **Audit logging** — every admin action logged with timestamp, admin username, action type, and target
+- **Bot management** — CRUD, test connectivity, assign to channels
+
+### Web Push Notifications
+
+Browser push notifications via service worker. Subscribe from the app, get notified when someone @mentions you or sends a DM while you're away.
+
+---
 
 ## Architecture
 
@@ -74,150 +81,222 @@ TLS_MODE=self-signed ./target/release/im-server
 │  │  (SPA)  │  │  (real-time)   │  │  (auth, files, ...)  │ │
 │  └────┬────┘  └───────┬────────┘  └──────────┬───────────┘ │
 └───────┼───────────────┼──────────────────────┼─────────────┘
-        │  Vite dev     │  ws://localhost:3000 │  http://localhost:3000
-        │  proxy ───────┘                      │
-        ▼                                       ▼
+        │               │                      │
+        ▼               ▼                      ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                      IM Server (Axum)                        │
-│  ┌─────────┐  ┌──────────┐  ┌────────┐  ┌───────────────┐  │
-│  │  Auth   │  │ Messages │  │Search  │  │  File Upload  │  │
-│  │  (JWT)  │  │ + Thread │  │        │  │               │  │
-│  ├─────────┤  ├──────────┤  ├────────┤  ├───────────────┤  │
-│  │Channels │  │  DM      │  │Reaction│  │  Invitations  │  │
-│  │         │  │          │  │        │  │  + Requests   │  │
-│  ├─────────┤  ├──────────┤  ├────────┤  ├───────────────┤  │
-│  │ Admin   │  │          │  │        │  │               │  │
-│  │(env JWT)│  │          │  │        │  │               │  │
-│  ├─────────┴──┴──────────┴──┴────────┴──┴───────────────┤  │
-│  │              WebSocket Manager (presence, typing)      │  │
-│  ├───────────────────────────────────────────────────────┤  │
-│  │              SQLite (via sqlx + migrations)            │  │
-│  └───────────────────────────────────────────────────────┘  │
+│  ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌─────────────┐ │
+│  │   Auth    │ │ Channels  │ │  Search   │ │   Files     │ │
+│  │   (JWT)   │ │ + Threads │ │  (FTS5)   │ │  (50 MiB)  │ │
+│  ├───────────┤ ├───────────┤ ├───────────┤ ├─────────────┤ │
+│  │  Bots     │ │    DM     │ │ Reactions │ │  Web Push   │ │
+│  │ (Hermes)  │ │           │ │           │ │             │ │
+│  ├───────────┤ ├───────────┤ ├───────────┤ ├─────────────┤ │
+│  │  Admin    │ │           │ │           │ │             │ │
+│  │(JWT+audit)│ │           │ │           │ │             │ │
+│  ├───────────┴─┴───────────┴─┴───────────┴─┴─────────────┤ │
+│  │         WebSocket Hub (broadcast + presence)            │ │
+│  ├────────────────────────────────────────────────────────┤ │
+│  │         SQLite (WAL mode, compile-time migrations)      │ │
+│  └────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Stack
+### Why These Choices
 
-| Layer        | Technology                                |
-|-------------|-------------------------------------------|
-| **Backend** | Rust, Axum 0.8, Tokio, sqlx, jsonwebtoken |
-| **Database** | SQLite (single file, zero-config)        |
-| **Frontend** | React 19, Vite 7, Tailwind CSS 4         |
-| **Real-time** | WebSocket (axum built-in)               |
-| **Auth**     | JWT (access tokens), Argon2 password hash |
+**Rust + Axum** — I wanted a language that compiles to a single binary and a framework that's fast without being bloated. Axum's extractor-based middleware and built-in WebSocket support make the code clean and the runtime lean. Memory usage at idle is around 10-15 MB.
 
-### Project Layout
+**React + Vite + Tailwind** — The frontend is embedded into the Rust binary via `rust-embed`. Vite builds it, Cargo bundles it. No separate frontend deployment, no CDN, no build steps on the server.
+
+**SQLite** — The database is a single file. Back it up with `cp`. Migrations are embedded at compile time, so the server auto-creates and auto-migrates on first run. WAL mode gives concurrent read performance good enough for a team-sized IM server.
+
+**WebSocket** — Axum's native WebSocket support means no extra dependency for real-time. Messages, typing, presence, reactions — all go over the same persistent connection. The broadcast hub uses Tokio channels internally.
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- [Rust](https://rustup.rs) 1.93+
+- [Bun](https://bun.sh) 1.2+
+
+### Development
+
+```bash
+git clone <repo-url> && cd vast
+cp .env.example .env
+
+# Generate a real JWT secret in production:
+# openssl rand -base64 48
+
+make dev
+```
+
+Backend starts on **http://localhost:3000**, frontend dev server on **http://localhost:5173** (with API/WS proxy to the backend).
+
+Admin console: **http://localhost:5173/admin/login** — `admin` / `admin123` in dev mode.
+
+### Production Build
+
+```bash
+./scripts/build.sh
+
+# Binary: target/release/im-server
+# The frontend is embedded — no separate static file serving needed.
+```
+
+### Run
+
+```bash
+cp .env target/release/
+./target/release/im-server
+
+# With TLS:
+TLS_MODE=self-signed ./target/release/im-server
+```
+
+---
+
+## Tech Stack
+
+| Layer            | Technology                                       |
+|------------------|--------------------------------------------------|
+| Language         | Rust 2024, TypeScript 6.0                        |
+| Web framework    | Axum 0.8 (ws + multipart)                        |
+| Async runtime    | Tokio 1.52                                       |
+| Database         | SQLite via sqlx 0.8 (WAL mode, FTS5)             |
+| Auth             | jsonwebtoken 10.4, Argon2 0.5                    |
+| Real-time        | WebSocket (Axum built-in), Tokio broadcast       |
+| TLS              | rustls via axum-server                            |
+| Frontend         | React 19, Vite 7, Tailwind CSS 4                  |
+| State management | Zustand 5 (client), TanStack React Query 5 (server) |
+| Routing          | React Router 7                                   |
+| HTTP client      | reqwest 0.12 (bot API calls)                     |
+| Push             | web-push 0.11                                    |
+| Testing          | cargo test, vitest, Playwright (E2E)             |
+
+---
+
+## Project Layout
 
 ```
 vast/
-├── src/                  # Rust backend
-│   ├── api/              #  REST route handlers
-│   │   ├── auth.rs       #  Register / Login / Password reset
-│   │   ├── channels.rs   #  Channel CRUD + archive
-│   │   ├── channel_members.rs #  Member management
-│   │   ├── messages.rs   #  Message CRUD + threads
-│   │   ├── dm.rs         #  Direct messages
-│   │   ├── files.rs      #  File upload/download (auth-guarded)
-│   │   ├── reactions.rs  #  Emoji reactions
-│   │   ├── search.rs     #  Full-text search
-│   │   ├── requests.rs   #  Join requests
-│   │   ├── invitations.rs#  Invitations
-│   │   ├── presence.rs   #  Presence status
-│   │   ├── bots.rs       #  Admin bot CRUD + test endpoint
-│   │   └── admin/        #  Admin console API (login, users, invites, audit)
-│   ├── auth/             #  Auth module
-│   │   ├── mod.rs        #  JWT + password utilities
-│   │   ├── middleware.rs #  JWT auth middleware
-│   │   └── admin.rs      #  Admin JWT + AdminAuthenticatedUser extractor
-│   ├── bot/              #  Hermes HTTP client module
+├── src/                      # Rust backend
+│   ├── main.rs               # Entrypoint, TLS setup, graceful shutdown
+│   ├── lib.rs                # AppState, router, health check
+│   ├── embed.rs              # Frontend SPA embedding (rust-embed)
+│   ├── error.rs              # Unified error → JSON responses
+│   ├── auth/
+│   │   ├── mod.rs            # JWT creation/validation, Argon2 hashing
+│   │   ├── middleware.rs     # AuthenticatedUser extractor
+│   │   └── admin.rs          # Admin JWT domain (separate from user)
+│   ├── db/mod.rs             # Pool init, WAL, compile-time migrations
+│   ├── ws/
+│   │   ├── mod.rs            # Connection pool, broadcast, heartbeat
+│   │   └── protocol.rs       # ClientEvent / ServerEvent types
+│   ├── bot/
 │   │   ├── mod.rs
-│   │   └── hermes.rs     #  OpenAI-compatible API client
-│   ├── ws/               #  WebSocket handler
-│   │   ├── mod.rs        #  Connection manager + hub
-│   │   └── protocol.rs   #  WS message protocol
-│   ├── db/               #  Database module
-│   │   └── mod.rs        #  Pool + migrations + queries
-│   ├── embed.rs          #  Frontend static file embedding
-│   ├── error.rs          #  Unified error types
-│   ├── lib.rs            #  App state + router setup
-│   └── main.rs           #  Server entrypoint
-├── frontend/             # React SPA
-│   ├── src/
-│   │   ├── api/          #  API client (channels, dm, reactions, ...)
-│   │   ├── components/   #  UI components (MessageList, ChannelSidebar, ...)
-│   │   ├── pages/        #  Route pages (Login, Register, Search, DM, ...)
-│   │   │   └── admin/    #  Admin pages (Login, Dashboard, Users, InviteCodes, AuditLogs)
-│   │   │       ├── AdminBotsPage.tsx #  Bot management (create/edit/delete/test)
-│   │   ├── hooks/        #  Custom hooks (useWebSocket, useCursorSync, ...)
-│   │   │   └── useUnreadTracker.ts #  WS new_msg → unread count tracking
-│   │   ├── stores/       #  Zustand stores (auth, channel, message, ...)
-│   │   │   ├── adminAuthStore.ts #  Admin auth state (Zustand)
-│   │   │   └── unreadStore.ts    #  Unread message counts (in-memory)
-│   │   ├── types/        #  TypeScript type definitions
-│   │   └── test/         #  Test setup
-│   ├── e2e/              #  Playwright E2E tests
-│   │   ├── auth.spec.ts          #  Login / Register flows
-│   │   ├── channels.spec.ts      #  Channel CRUD
-│   │   ├── chat.spec.ts          #  Messaging
-│   │   ├── dm.spec.ts            #  Direct messages
-│   │   ├── threads.spec.ts       #  Thread replies
-│   │   ├── permissions.spec.ts   #  Channel membership
-│   │   ├── reactions.spec.ts     #  Emoji reactions
-│   │   ├── search.spec.ts        #  Full-text search
-│   │   └── helpers.ts            #  Shared E2E utilities
-│   └── vitest.config.ts #  Unit test config
-├── tests/                #  Rust integration tests
-│   └── integration/      #  28 integration tests (4 suites)
-├── scripts/              # Utility scripts
-│   ├── build.sh          #  One-click build
-│   ├── bench.sh          #  Benchmark suite
-│   └── gen-self-signed-cert.sh
-├── deploy/               # Production deployment
-│   ├── install.sh        #  Install as systemd service
-│   ├── im-server.service #  systemd unit file
-│   └── nginx.conf        #  Nginx reverse proxy config
-├── certs/                # TLS certificates
-└── data/                 # Runtime data (SQLite DB, uploads)
+│   │   └── hermes.rs         # OpenAI-compatible HTTP client
+│   ├── push/
+│   │   ├── mod.rs            # VAPID key management
+│   │   └── sender.rs         # Web Push sender
+│   ├── api/
+│   │   ├── mod.rs            # Sub-router
+│   │   ├── auth.rs           # Register / Login
+│   │   ├── channels.rs       # Channel CRUD + archive
+│   │   ├── channel_members.rs
+│   │   ├── messages.rs       # Messages + threads
+│   │   ├── dm.rs             # Direct messages
+│   │   ├── files.rs          # Upload, download, listing, soft delete
+│   │   ├── reactions.rs      # Emoji reactions
+│   │   ├── search.rs         # Full-text search (FTS5)
+│   │   ├── requests.rs       # Join requests
+│   │   ├── invitations.rs
+│   │   ├── presence.rs
+│   │   ├── push.rs           # Web Push subscriptions
+│   │   ├── trains.rs         # Collaborative train feature
+│   │   ├── votes.rs          # Polls/voting
+│   │   └── admin/
+│   │       ├── mod.rs        # Dashboard, users, invite codes, audit
+│   │       └── bots.rs       # Bot CRUD + test endpoint
+│   └── db/migrations/        # 9 compile-time SQL migrations
+│       ├── 001_initial_schema
+│       ├── 002_add_session_active
+│       ├── 003_add_trains
+│       ├── 004_add_votes
+│       ├── 005_token_epoch
+│       ├── 006_admin_audit_logs
+│       ├── 007_bots
+│       ├── 008_file_index
+│       └── 009_push_tables
+├── frontend/                 # React SPA
+│   └── src/
+│       ├── main.tsx          # Entrypoint + service worker
+│       ├── App.tsx           # Router (user + admin routes)
+│       ├── api/              # API client modules per feature
+│       ├── components/       # UI components
+│       ├── pages/            # Route pages
+│       │   └── admin/        # Admin pages (Dashboard, Users, Bots, etc.)
+│       ├── hooks/            # useWebSocket, useUnreadTracker, useCursorSync
+│       ├── stores/           # Zustand stores (auth, channel, message, unread)
+│       └── types/            # TypeScript interfaces
+├── tests/integration/        # 28 Rust integration tests
+├── deploy/
+│   ├── install.sh            # systemd service installer
+│   ├── im-server.service     # Hardened systemd unit
+│   └── nginx.conf            # Production reverse proxy
+├── scripts/
+│   ├── build.sh              # One-click build
+│   ├── bench.sh              # Benchmark suite
+│   ├── dev-server.sh         # Dev mode launcher
+│   ├── e2e-test.sh
+│   ├── gen-self-signed-cert.sh
+│   └── clean-db.sh
+├── certs/                    # TLS certificates
+└── data/                     # Runtime data (DB, uploads)
 ```
 
-## API Overview
+---
 
-All API endpoints are prefixed with `/api`. Authentication via `Authorization: Bearer <token>` header (except auth endpoints).
+## API Reference
 
-### Authentication
+All endpoints prefixed with `/api`. Authentication via `Authorization: Bearer <jwt_token>`.
 
-| Method | Path                  | Description                  |
-|--------|-----------------------|------------------------------|
-| POST   | `/api/auth/register`  | Register new user            |
-| POST   | `/api/auth/login`     | Login, returns JWT token     |
+### Auth
+
+| Method | Path                  | Description       |
+|--------|-----------------------|-------------------|
+| POST   | `/api/auth/register`  | Register new user |
+| POST   | `/api/auth/login`     | Login, get JWT    |
 
 ### Channels
 
-| Method | Path                            | Description              |
-|--------|---------------------------------|--------------------------|
-| GET    | `/api/channels`                 | List all channels        |
-| POST   | `/api/channels`                 | Create a channel         |
-| GET    | `/api/channels/{id}`            | Get channel details      |
-| PATCH  | `/api/channels/{id}`            | Update channel           |
-| POST   | `/api/channels/{id}/archive`    | Archive a channel        |
-| POST   | `/api/channels/{id}/unarchive`  | Unarchive a channel      |
+| Method | Path                            | Description         |
+|--------|---------------------------------|---------------------|
+| GET    | `/api/channels`                 | List channels       |
+| POST   | `/api/channels`                 | Create a channel    |
+| GET    | `/api/channels/{id}`            | Get channel details |
+| PATCH  | `/api/channels/{id}`            | Update channel      |
+| POST   | `/api/channels/{id}/archive`    | Archive channel     |
+| POST   | `/api/channels/{id}/unarchive`  | Unarchive channel   |
 
 ### Messages & Threads
 
-| Method | Path                                                   | Description                |
-|--------|--------------------------------------------------------|----------------------------|
-| GET    | `/api/channels/{channel_id}/messages`                  | List messages (paginated)  |
-| POST   | `/api/channels/{channel_id}/messages`                  | Send a message             |
-| DELETE | `/api/messages/{message_id}`                           | Delete a message           |
-| GET    | `/api/channels/{channel_id}/messages/{msg_id}/thread`  | Get thread replies         |
+| Method | Path                                                    | Description               |
+|--------|---------------------------------------------------------|---------------------------|
+| GET    | `/api/channels/{channel_id}/messages`                   | List messages (paginated) |
+| POST   | `/api/channels/{channel_id}/messages`                   | Send a message            |
+| DELETE | `/api/messages/{message_id}`                            | Delete a message          |
+| GET    | `/api/channels/{channel_id}/messages/{msg_id}/thread`   | Get thread replies        |
 
 ### Reactions
 
-| Method | Path                                               | Description       |
-|--------|----------------------------------------------------|-------------------|
-| GET    | `/api/messages/{message_id}/reactions`             | Get reactions     |
-| POST   | `/api/messages/{message_id}/reactions`             | Add reaction      |
-| DELETE | `/api/messages/{message_id}/reactions/{emoji}`     | Remove reaction   |
+| Method | Path                                             | Description     |
+|--------|--------------------------------------------------|-----------------|
+| GET    | `/api/messages/{message_id}/reactions`            | Get reactions   |
+| POST   | `/api/messages/{message_id}/reactions`            | Add reaction    |
+| DELETE | `/api/messages/{message_id}/reactions/{emoji}`    | Remove reaction |
 
 ### Direct Messages
 
@@ -228,167 +307,162 @@ All API endpoints are prefixed with `/api`. Authentication via `Authorization: B
 
 ### Files
 
-| Method | Path                  | Description         |
-|--------|-----------------------|---------------------|
-| POST   | `/api/files/upload`   | Upload a file       |
-| GET    | `/api/files/{file_id}`| Download a file     |
+| Method | Path                  | Description     |
+|--------|-----------------------|-----------------|
+| POST   | `/api/files/upload`   | Upload a file   |
+| GET    | `/api/files/{id}`     | Download a file |
 
 ### Search
 
-| Method | Path              | Description              |
-|--------|-------------------|--------------------------|
-| GET    | `/api/search`     | Full-text search messages|
+| Method | Path            | Description              |
+|--------|-----------------|--------------------------|
+| GET    | `/api/search`   | Full-text message search |
 
 ### Join Requests & Invitations
 
-| Method | Path                                    | Description              |
-|--------|-----------------------------------------|--------------------------|
-| POST   | `/api/channels/{id}/join-request`       | Request to join channel  |
-| GET    | `/api/requests`                         | List join requests       |
-| PUT    | `/api/requests/{id}/approve`            | Approve a request        |
-| PUT    | `/api/requests/{id}/reject`             | Reject a request         |
-| POST   | `/api/channels/{id}/invitations`        | Create an invitation     |
-| GET    | `/api/invitations`                      | List invitations         |
-| PUT    | `/api/invitations/{id}/accept`          | Accept an invitation     |
-| PUT    | `/api/invitations/{id}/reject`          | Reject an invitation     |
+| Method | Path                                    | Description           |
+|--------|-----------------------------------------|-----------------------|
+| POST   | `/api/channels/{id}/join-request`       | Request to join       |
+| GET    | `/api/requests`                         | List join requests    |
+| PUT    | `/api/requests/{id}/approve`            | Approve               |
+| PUT    | `/api/requests/{id}/reject`             | Reject                |
+| POST   | `/api/channels/{id}/invitations`        | Create invitation     |
+| GET    | `/api/invitations`                      | List invitations      |
+| PUT    | `/api/invitations/{id}/accept`          | Accept                |
+| PUT    | `/api/invitations/{id}/reject`          | Reject                |
 
 ### Admin Console
 
-All admin endpoints are prefixed with `/api/admin` and require a separate admin JWT (obtained via `/api/admin/login`).
+All admin endpoints require a separate admin JWT (`/api/admin/login`).
 
-| Method | Path                          | Description                              |
-|--------|-------------------------------|------------------------------------------|
-| POST   | `/api/admin/login`            | Admin login (env credentials)            |
-| POST   | `/api/admin/logout`           | Admin logout                             |
-| POST   | `/api/admin/refresh`          | Refresh admin token                      |
-| GET    | `/api/admin/me`               | Get admin info                           |
-| GET    | `/api/admin/dashboard`        | Dashboard stats (user/channel/msg counts)|
-| GET    | `/api/admin/users`            | List users                               |
-| GET    | `/api/admin/users/{id}`       | Get user details                         |
-| PATCH  | `/api/admin/users/{id}`       | Update user (disable/enable)             |
-| POST   | `/api/admin/users/{id}/reset-password` | Reset user password            |
-| DELETE | `/api/admin/users/{id}`       | Delete user                              |
-| GET    | `/api/admin/invite-codes`     | List invite codes                        |
-| POST   | `/api/admin/invite-codes`     | Create invite code                       |
-| PATCH  | `/api/admin/invite-codes/{code}` | Update invite code (toggle/reset count)|
-| DELETE | `/api/admin/invite-codes/{code}` | Delete invite code                    |
-| GET    | `/api/admin/audit-logs`       | List audit logs (filterable by action)   |
+| Method | Path                                    | Description              |
+|--------|-----------------------------------------|--------------------------|
+| POST   | `/api/admin/login`                      | Admin login              |
+| POST   | `/api/admin/logout`                     | Admin logout             |
+| POST   | `/api/admin/refresh`                    | Refresh admin token      |
+| GET    | `/api/admin/me`                         | Get admin info           |
+| GET    | `/api/admin/dashboard`                  | Dashboard stats          |
+| GET    | `/api/admin/users`                      | List users               |
+| GET    | `/api/admin/users/{id}`                 | Get user details         |
+| PATCH  | `/api/admin/users/{id}`                 | Update (disable/enable)  |
+| POST   | `/api/admin/users/{id}/reset-password`  | Reset user password      |
+| DELETE | `/api/admin/users/{id}`                 | Delete user              |
+| GET    | `/api/admin/invite-codes`               | List invite codes        |
+| POST   | `/api/admin/invite-codes`               | Create invite code       |
+| PATCH  | `/api/admin/invite-codes/{code}`        | Update invite code       |
+| DELETE | `/api/admin/invite-codes/{code}`        | Delete invite code       |
+| GET    | `/api/admin/audit-logs`                 | Audit log (filterable)   |
 
 ### Bots
 
-| Method | Path                          | Description                              |
-|--------|-------------------------------|------------------------------------------|
-| GET    | `/api/bots`                   | List active bots (public, no secrets)    |
-| POST   | `/api/admin/bots`             | Create bot (admin only)                  |
-| GET    | `/api/admin/bots`             | List all bots (admin only)               |
-| PATCH  | `/api/admin/bots/:id`         | Update bot config (admin only)           |
-| DELETE | `/api/admin/bots/:id`         | Delete bot (admin only)                  |
-| POST   | `/api/admin/bots/:id/test`    | Test bot API connectivity (admin only)   |
-| POST   | `/api/channels/:id/bots`      | Add bot to channel (owner only)          |
+| Method | Path                          | Description                  |
+|--------|-------------------------------|------------------------------|
+| GET    | `/api/bots`                   | List active bots (public)    |
+| POST   | `/api/admin/bots`             | Create bot (admin)           |
+| GET    | `/api/admin/bots`             | List all bots (admin)        |
+| PATCH  | `/api/admin/bots/:id`         | Update bot (admin)           |
+| DELETE | `/api/admin/bots/:id`         | Delete bot (admin)           |
+| POST   | `/api/admin/bots/:id/test`    | Test bot connectivity (admin)|
+| POST   | `/api/channels/:id/bots`      | Add bot to channel (owner)   |
 
 ### WebSocket
 
-Connect to `/ws?token=<jwt_token>` for real-time events:
-- New messages (broadcast)
-- Typing indicators
-- Presence updates (online/offline)
-- Message reactions
-- Message updates (e.g. join-request status changes)
+Connect to `/ws?token=<jwt_token>`. Events streamed over the connection:
+
+- **New messages** (broadcast to channel)
+- **Typing indicators**
+- **Presence updates** (online/offline)
+- **Message reactions**
+- **Message/status changes**
 
 ### Health
 
-| Method | Path          | Description            |
-|--------|---------------|------------------------|
-| GET    | `/api/health` | Server health check    |
-| GET    | `/`           | Root health check      |
+| Method | Path          | Description         |
+|--------|---------------|---------------------|
+| GET    | `/api/health` | Server health check |
+| GET    | `/`           | Root health check   |
+
+---
 
 ## Deployment
 
-### Manual Deployment
+### systemd (Recommended)
 
 ```bash
-# 1. Build the binary
 ./scripts/build.sh
-
-# 2. Run the install script (as root)
 sudo ./deploy/install.sh target/release/im-server
-
-# 3. Edit the environment file
-sudo nano /opt/im-server/.env
-
-# 4. Start the service
+sudo nano /opt/im-server/.env   # Set JWT_SECRET and ADMIN_PASSWORD
 sudo systemctl start im-server
-sudo systemctl status im-server
 ```
+
+The systemd unit runs as a dedicated `im-server` user with hardening:
+
+- `NoNewPrivileges=true`, `PrivateTmp=true`, `ProtectSystem=strict`
+- Write access limited to `/opt/im-server` and `/var/log/im-server`
+- File descriptor limit: 65536
 
 ### Nginx Reverse Proxy
 
-The repo includes `deploy/nginx.conf` — a production-grade reverse proxy configuration with:
+The included `deploy/nginx.conf` provides:
 
 - TLS termination
-- HTTP → HTTPS redirection
-- WebSocket support (long-lived connections)
-- Security headers
-- Request size limits (50 MB)
+- HTTP → HTTPS redirect
+- WebSocket upgrade support
+- Security headers (HSTS, XSS, frame options)
+- 50 MiB request body limit
 - Rate limiting
 
-Place it at `/etc/nginx/sites-available/im-server`, adjust `server_name` and certificate paths, then enable:
-
 ```bash
+sudo cp deploy/nginx.conf /etc/nginx/sites-available/im-server
 sudo ln -s /etc/nginx/sites-available/im-server /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
 ### Environment Variables
 
-| Variable       | Default                    | Description                            |
-|---------------|----------------------------|----------------------------------------|
-| `DATABASE_URL`| `sqlite:vast.db`           | SQLite database path                   |
-| `JWT_SECRET`  | `dev-secret-change-me`     | JWT signing secret (REQUIRED in prod)  |
-| `INVITE_CODE` | `IM2024`                   | Registration invite code               |
-| `SERVER_PORT` | `3000`                     | HTTP listen port                       |
-| `UPLOAD_MAX_SIZE` | `52428800`            | Max upload size in bytes (50 MiB)      |
-| `TLS_MODE`    | `none`                     | `none`, `self-signed`, or `lets-encrypt`|
-| `ADMIN_USERNAME` | `admin`             | Admin console username                          |
-| `ADMIN_PASSWORD` | (empty = disabled)  | Admin console password (required to enable)     |
+| Variable          | Default                  | Description                         |
+|-------------------|--------------------------|-------------------------------------|
+| `DATABASE_URL`    | `sqlite:vast.db`         | SQLite path                         |
+| `JWT_SECRET`      | `dev-secret-change-me`   | **Change this in production**       |
+| `INVITE_CODE`     | `IM2024`                 | Registration invite code            |
+| `SERVER_PORT`     | `3000`                   | HTTP listen port                    |
+| `UPLOAD_MAX_SIZE` | `52428800`               | Max upload (bytes), default 50 MiB  |
+| `TLS_MODE`        | `none`                   | `none`, `self-signed`, `lets-encrypt`|
+| `ADMIN_USERNAME`  | `admin`                  | Admin console username              |
+| `ADMIN_PASSWORD`  | (empty = disabled)       | Admin console password              |
 
-### systemd Service
-
-The service runs as `im-server` user with strict hardening:
-- `NoNewPrivileges=true`, `PrivateTmp=true`, `ProtectSystem=strict`
-- Read/write access only to `/opt/im-server` and `/var/log/im-server`
-- File descriptor limit: 65536
+---
 
 ## Development
 
 ```bash
-# Run tests (backend + frontend unit)
+# Run all tests
 make test
 
-# Run frontend unit tests (180 tests)
+# Frontend unit tests (~180 tests)
 cd frontend && bun test
 
-# Run E2E tests (requires servers running on :3000 + :5173)
-make test-e2e
-
-# Run Rust integration tests only (287 backend tests: 259 unit + 28 integration)
+# Backend tests (259 unit + 28 integration)
 make test-backend
 
-# Run lints
+# E2E tests (requires dev servers on :3000 + :5173)
+make test-e2e
+
+# Lint
 make clippy
 
-# Clean build artifacts
+# Clean
 make clean
-
-# Parallel dev servers (backend + hot-reload frontend)
-# make dev sets ADMIN_USERNAME=admin ADMIN_PASSWORD=admin123
-make dev
-
-# Bot feature: admin creates bots, channel owners add them, users @mention
 ```
 
-Benchmarks are available via `scripts/bench.sh` — tests insert throughput, concurrent read latency, and WebSocket memory usage.
+Benchmarks: `scripts/bench.sh` — insert throughput, concurrent read latency, WebSocket memory usage.
+
+---
 
 ## License
 
 MIT
+
+---
+
+*Built because someone had to.*

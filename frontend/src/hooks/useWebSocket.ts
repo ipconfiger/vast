@@ -326,8 +326,10 @@ function useWsEventSync(manager: WebSocketManager): void {
         const ev = data as { channel_id: string }
         if (!ev || typeof ev.channel_id !== 'string') return
         useChannelStore.getState().updateChannel(ev.channel_id, { is_archived: true })
-        // Store update is sufficient — ChannelListPage re-renders showing the archived view
-        // without a destructive full-page navigation that could abort in-flight downloads.
+        // Invalidate React Query caches so ChannelListPage (which reads from useChannel)
+        // re-fetches and shows the archived view, not a stale chat UI.
+        queryClient.invalidateQueries({ queryKey: ['channel', ev.channel_id] })
+        queryClient.invalidateQueries({ queryKey: ['channels'] })
       }),
       manager.subscribe('channel_unarchived', (data) => {
         const ev = data as { channel_id: string }
