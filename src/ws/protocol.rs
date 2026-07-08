@@ -81,6 +81,14 @@ pub enum ServerEvent {
         code: String,
         message: String,
     },
+    DmCreated {
+        dm_channel_id: String,
+        participant_ids: Vec<String>,
+    },
+    DmClosed {
+        dm_channel_id: String,
+        participant_ids: Vec<String>,
+    },
     Pong,
 }
 

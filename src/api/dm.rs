@@ -81,6 +81,48 @@ pub async fn create_dm(
         }
     }
 
+    // dm_policy check: for each other user, verify they allow DMs
+    let requester_id = &user.0;
+    for uid in &user_ids {
+        if uid == requester_id {
+            continue;
+        }
+
+        let dm_policy: String = sqlx::query_scalar(
+            "SELECT dm_policy FROM users WHERE id = ?",
+        )
+        .bind(uid)
+        .fetch_one(&state.pool)
+        .await?;
+
+        match dm_policy.as_str() {
+            "open" => {
+                // Allow — user accepts DMs from anyone
+                continue;
+            }
+            _ => {
+                // Check for shared channels between the two users
+                let shared: i64 = sqlx::query_scalar(
+                    "SELECT 1 FROM channel_members \
+                     WHERE user_id = ? \
+                       AND channel_id IN (SELECT channel_id FROM channel_members WHERE user_id = ?) \
+                     LIMIT 1",
+                )
+                .bind(uid)
+                .bind(requester_id)
+                .fetch_optional(&state.pool)
+                .await?
+                .unwrap_or(0);
+
+                if shared == 0 {
+                    return Err(AppError::Forbidden(
+                        "This user does not accept direct messages from users outside shared channels".to_string(),
+                    ));
+                }
+            }
+        }
+    }
+
     if user_ids.len() == 2 {
         let user_a = &user_ids[0];
         let user_b = &user_ids[1];
@@ -135,6 +177,12 @@ pub async fn create_dm(
         .await?;
     }
 
+    // Broadcast DmCreated event to all connected WebSocket clients
+    let _ = state.ws_pool.global_tx.send(crate::ws::protocol::ServerEvent::DmCreated {
+        dm_channel_id: channel_id.clone(),
+        participant_ids: user_ids.clone(),
+    });
+
     let channel = sqlx::query_as::<_, DmChannel>(
         "SELECT id, name, description, owner_id, is_direct, is_group_dm, is_archived, created_at \
          FROM channels WHERE id = ?",
@@ -144,6 +192,83 @@ pub async fn create_dm(
     .await?;
 
     Ok((StatusCode::CREATED, Json(channel)))
+}
+
+/// POST /api/dm/{id}/close
+pub async fn close_dm(
+    State(state): State<Arc<AppState>>,
+    user: AuthenticatedUser,
+    axum::extract::Path(dm_id): axum::extract::Path<String>,
+) -> Result<StatusCode, AppError> {
+    // Verify the channel exists, is a DM channel, and is not already archived.
+    let channel = sqlx::query_as::<_, DmChannel>(
+        "SELECT id, name, description, owner_id, is_direct, is_group_dm, is_archived, created_at \
+         FROM channels WHERE id = ?",
+    )
+    .bind(&dm_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("DM channel not found: {dm_id}")))?;
+
+    if !channel.is_direct && !channel.is_group_dm {
+        return Err(AppError::BadRequest(
+            "Channel is not a DM channel".to_string(),
+        ));
+    }
+
+    if channel.is_archived {
+        return Err(AppError::BadRequest(
+            "DM channel is already closed".to_string(),
+        ));
+    }
+
+    // Verify the authenticated user is a member.
+    let is_member: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM channel_members WHERE channel_id = ? AND user_id = ?",
+    )
+    .bind(&dm_id)
+    .bind(&user.0)
+    .fetch_one(&state.pool)
+    .await?
+        > 0;
+
+    if !is_member {
+        return Err(AppError::Forbidden(
+            "You are not a member of this DM channel".to_string(),
+        ));
+    }
+
+    // Collect participant IDs *before* removing the current user.
+    let participant_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT user_id FROM channel_members WHERE channel_id = ?",
+    )
+    .bind(&dm_id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    // Remove the authenticated user from channel_members.
+    sqlx::query("DELETE FROM channel_members WHERE channel_id = ? AND user_id = ?")
+        .bind(&dm_id)
+        .bind(&user.0)
+        .execute(&state.pool)
+        .await?;
+
+    // Always archive the DM channel when any participant closes it,
+    // so it disappears from everyone's DM list.
+    sqlx::query("UPDATE channels SET is_archived = 1 WHERE id = ?")
+        .bind(&dm_id)
+        .execute(&state.pool)
+        .await?;
+
+    // Broadcast DmClosed event to all other participants.
+    let _ = state.ws_pool.global_tx.send(
+        crate::ws::protocol::ServerEvent::DmClosed {
+            dm_channel_id: dm_id.clone(),
+            participant_ids: participant_ids.clone(),
+        },
+    );
+
+    Ok(StatusCode::OK)
 }
 
 /// GET /api/dm
@@ -156,7 +281,7 @@ pub async fn list_dms(
                 c.is_group_dm, c.is_archived, c.created_at \
          FROM channels c \
          JOIN channel_members cm ON c.id = cm.channel_id \
-         WHERE cm.user_id = ? AND c.is_direct = 1 \
+         WHERE cm.user_id = ? AND c.is_direct = 1 AND c.is_archived = 0 \
          ORDER BY c.created_at DESC",
     )
     .bind(&user.0)
@@ -196,7 +321,9 @@ async fn generate_dm_name(
 
 pub fn dm_routes() -> Router<Arc<AppState>> {
     use axum::routing::post;
-    Router::new().route("/", post(create_dm).get(list_dms))
+    Router::new()
+        .route("/", post(create_dm).get(list_dms))
+        .route("/{id}/close", post(close_dm))
 }
 
 // ---------------------------------------------------------------------------
@@ -225,13 +352,15 @@ mod tests {
         let user_id = Uuid::new_v4().to_string();
         let pw = crate::auth::hash_password("testpass").expect("Failed to hash password");
         let username = format!("user_{}", &user_id[..6]);
-        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)")
-            .bind(&user_id)
-            .bind(&username)
-            .bind(&pw)
-            .execute(pool)
-            .await
-            .expect("Failed to insert test user");
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, dm_policy) VALUES (?, ?, ?, 'open')",
+        )
+        .bind(&user_id)
+        .bind(&username)
+        .bind(&pw)
+        .execute(pool)
+        .await
+        .expect("Failed to insert test user");
 
         let secret = "test-secret";
         unsafe { std::env::set_var("JWT_SECRET", secret) };

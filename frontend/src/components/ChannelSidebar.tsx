@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router'
-import { Plus, Hash, Lock, Users, Loader2, Menu, X, Globe, FolderOpen, Archive } from 'lucide-react'
+import { Plus, Hash, Lock, Users, Loader2, Menu, X, Globe, FolderOpen, Archive, Search, LogOut } from 'lucide-react'
 import { useChannels, useCreateChannel, downloadChannelArchive } from '../api/channels'
-import { useDms } from '../api/dm'
+import { useDms, useCloseDm } from '../api/dm'
 import { useChannelStore } from '../stores/channelStore'
 import { usePresenceStore } from '../stores/presenceStore'
 import { useUserStore } from '../stores/userStore'
@@ -13,6 +13,7 @@ import { ChannelListSkeleton } from './Skeletons'
 import { NoChannelsEmpty } from './EmptyState'
 import { CreateChannelDialog } from './CreateChannelDialog'
 import { DiscoverChannelsModal } from './DiscoverChannelsModal'
+import { UserSearchModal } from './UserSearchModal'
 import type { Channel } from '../types'
 import type { DmChannel } from '../api/dm'
 
@@ -76,18 +77,29 @@ export function DmItem({
 }) {
   const currentUsername = useAuthStore((s) => s.user?.username ?? '')
   const unread = useUnreadStore((s) => s.unreadByChannel[dm.id] ?? 0)
+  const closeDm = useCloseDm()
   return (
     <button
       onClick={onClick}
-      className="dm-item flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-sm text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+      className="dm-item group flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-sm text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
     >
       <Users className="h-4 w-4 flex-shrink-0" />
       <span className="truncate">{dmDisplayName(dm, currentUsername)}</span>
       {unread > 0 && (
-        <span className="ml-auto inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 text-xs font-medium text-white bg-red-500 rounded-full">
+        <span className="ml-auto inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 text-xs font-medium text-white bg-red-500 rounded-full group-hover:hidden">
           {unread > 99 ? '99+' : unread}
         </span>
       )}
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          closeDm.mutate(dm.id)
+        }}
+        className="ml-auto hidden group-hover:flex items-center justify-center p-0.5 text-zinc-600 hover:text-red-400 rounded transition-colors"
+        aria-label={`Close DM with ${dmDisplayName(dm, currentUsername)}`}
+      >
+        <X className="h-4 w-4" />
+      </button>
     </button>
   )
 }
@@ -109,6 +121,7 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
   const getName = useUserStore((s) => s.getName)
   const currentUserId = useAuthStore((s) => s.user?.id)
   const user = useAuthStore((s) => s.user)
+  const logout = useAuthStore((s) => s.logout)
   const avatarSrc = useAuthImage(user?.avatar_url)
 
   useEffect(() => {
@@ -123,6 +136,7 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
 
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [isDiscoverOpen, setIsDiscoverOpen] = useState(false)
+  const [isUserSearchOpen, setIsUserSearchOpen] = useState(false)
 
   const handleCreateChannel = (data: {
     name: string
@@ -220,11 +234,20 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
           </div>
         )}
 
-        {dms && dms.length > 0 && (
-          <div className="mt-4 border-t border-zinc-800 pt-3">
-            <h3 className="px-3 pb-2 text-xs font-semibold text-zinc-500 uppercase tracking-wider">
+        <div className="mt-4 border-t border-zinc-800 pt-3">
+          <div className="flex items-center justify-between px-3 pb-2">
+            <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wider">
               Direct Messages
             </h3>
+            <button
+              onClick={() => setIsUserSearchOpen(true)}
+              className="rounded-md p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
+              aria-label="New direct message"
+            >
+              <Plus className="h-4 w-4" />
+            </button>
+          </div>
+          {dms && dms.length > 0 && (
             <div className="flex flex-col gap-0.5">
               {dms.map((dm) => (
                 <DmItem
@@ -237,8 +260,8 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
                 />
               ))}
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
         {onlineUsers.size > 0 && (
           <div className="mt-4 border-t border-zinc-800 pt-3">
@@ -265,21 +288,31 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
         )}
 
         <div className="mt-auto border-t border-zinc-800 pt-3 px-3 pb-3">
+          <button onClick={() => { navigate('/search'); onClose?.() }} className="flex items-center gap-2 w-full rounded-md px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors">
+            <Search className="h-4 w-4" />
+            <span>Search</span>
+            <span className="ml-auto text-xs text-zinc-600">Ctrl+K</span>
+          </button>
           <button onClick={() => { navigate('/files'); onClose?.() }} className="flex items-center gap-2 w-full rounded-md px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors">
             <FolderOpen className="h-4 w-4" />
             <span>Files</span>
           </button>
-          <button onClick={() => { navigate('/profile'); onClose?.() }} className="flex items-center gap-2 w-full rounded-md px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors">
-            {avatarSrc ? (
-              <img src={avatarSrc} className="h-7 w-7 rounded-full object-cover" />
-            ) : (
-              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-zinc-700 text-xs font-semibold text-zinc-300">
-                {user?.username?.charAt(0).toUpperCase() || '?'}
-              </div>
-            )}
-            <span className="truncate">{user?.display_name || user?.username || 'Profile'}</span>
-          </button>
         </div>
+      </div>
+      <div className="border-t border-zinc-800 px-3 py-3 flex items-center gap-1">
+        <button onClick={() => { navigate('/profile'); onClose?.() }} className="flex items-center gap-2 flex-1 min-w-0 rounded-md px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors">
+          {avatarSrc ? (
+            <img src={avatarSrc} className="h-7 w-7 rounded-full object-cover" />
+          ) : (
+            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-zinc-700 text-xs font-semibold text-zinc-300">
+              {user?.username?.charAt(0).toUpperCase() || '?'}
+            </div>
+          )}
+          <span className="truncate">{user?.display_name || user?.username || 'Profile'}</span>
+        </button>
+        <button onClick={() => { logout(); onClose?.() }} title="Sign out" className="flex items-center justify-center rounded-md p-2 text-zinc-500 hover:bg-red-900/30 hover:text-red-400 transition-colors">
+          <LogOut className="h-4 w-4" />
+        </button>
       </div>
 
       <CreateChannelDialog
@@ -292,6 +325,11 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
       <DiscoverChannelsModal
         isOpen={isDiscoverOpen}
         onClose={() => setIsDiscoverOpen(false)}
+      />
+
+      <UserSearchModal
+        isOpen={isUserSearchOpen}
+        onClose={() => setIsUserSearchOpen(false)}
       />
     </aside>
   )

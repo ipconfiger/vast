@@ -103,6 +103,18 @@ async fn register_user(app: &mut Router, username: &str, password: &str) -> (Str
     assert_eq!(status, StatusCode::CREATED, "Register failed: {body}");
     let access = body["access_token"].as_str().unwrap().to_string();
     let refresh = body["refresh_token"].as_str().unwrap().to_string();
+
+    // Default dm_policy is 'members' — set to 'open' so DMs work in tests
+    let (patch_status, _) = request(
+        app,
+        Method::PATCH,
+        "/auth/profile",
+        Some(json!({"dm_policy": "open"})),
+        &access,
+    )
+    .await;
+    assert_eq!(patch_status, StatusCode::OK, "Failed to set dm_policy=open for {username}");
+
     (access, refresh)
 }
 

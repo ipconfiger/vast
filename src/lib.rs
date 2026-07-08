@@ -188,6 +188,7 @@ pub fn api_routes() -> Router<Arc<AppState>> {
             delete(api::reactions::remove_reaction),
         )
         .route("/search", get(api::search::search_messages))
+        .route("/users", get(api::users::search_users))
         .route(
             "/channels/{id}/join-request",
             post(api::requests::create_join_request),

@@ -12,6 +12,7 @@ pub mod reactions;
 pub mod requests;
 pub mod search;
 pub mod trains;
+pub mod users;
 pub mod votes;
 
 use axum::{routing::{delete, get, post, put}, Router};
@@ -21,6 +22,7 @@ use crate::AppState;
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/users", get(users::search_users))
         .route("/bots", get(channels::list_public_bots))
         .route("/channels", get(channels::list_channels).post(channels::create_channel))
         .route("/channels/discover", get(channels::discover_channels))

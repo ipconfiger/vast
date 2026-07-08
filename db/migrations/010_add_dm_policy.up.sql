@@ -1,0 +1,1 @@
+ALTER TABLE users ADD COLUMN dm_policy TEXT NOT NULL DEFAULT 'members';

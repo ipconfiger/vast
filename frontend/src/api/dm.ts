@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from './client'
+import type { User } from '../types'
 
 export interface DmChannel {
   id: string
@@ -31,6 +32,29 @@ export function useCreateDm() {
         method: 'POST',
         body: JSON.stringify({ user_ids: userIds }),
       }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dms'] })
+    },
+  })
+}
+
+export function useUserSearch(query: string) {
+  return useQuery({
+    queryKey: ['users', 'search', query],
+    queryFn: async () => {
+      if (!query) return []
+      const data = await apiClient<{ users: User[] }>(`/users?q=${encodeURIComponent(query)}`)
+      return data.users
+    },
+    enabled: query.length > 0,
+  })
+}
+
+export function useCloseDm() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (channelId: string) =>
+      apiClient(`/dm/${channelId}/close`, { method: 'POST' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['dms'] })
     },

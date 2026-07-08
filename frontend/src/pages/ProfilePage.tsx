@@ -33,15 +33,16 @@ export default function ProfilePage() {
 	  const uploadMutation = useUploadFile()
 	const [notifStatus, setNotifStatus] = useState<NotifStatus>('loading')
 	const [notifError, setNotifError] = useState<string | null>(null)
+	const [dmPolicy, setDmPolicy] = useState<'open' | 'members'>('members')
 
   const saveMutation = useMutation({
-    mutationFn: (display_name: string) =>
-      apiClient<{ id: string; username: string; display_name: string; avatar_url: string }>('/auth/profile', {
+    mutationFn: (params: { display_name: string; dm_policy: 'open' | 'members' }) =>
+      apiClient<{ id: string; username: string; display_name: string; avatar_url: string; dm_policy: string }>('/auth/profile', {
         method: 'PATCH',
-        body: JSON.stringify({ display_name }),
+        body: JSON.stringify(params),
       }),
     onSuccess: (data) => {
-      if (user) setUser({ ...user, display_name: data.display_name, avatar_url: data.avatar_url })
+      if (user) setUser({ ...user, display_name: data.display_name, avatar_url: data.avatar_url, dm_policy: data.dm_policy as 'open' | 'members' })
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
     },
@@ -49,9 +50,10 @@ export default function ProfilePage() {
 
   useEffect(() => {
     if (!fetched) {
-      apiClient<{ id: string; username: string; display_name: string; avatar_url: string }>('/auth/profile')
+      apiClient<{ id: string; username: string; display_name: string; avatar_url: string; dm_policy?: string }>('/auth/profile')
         .then(d => {
           setDisplayName(d.display_name)
+          setDmPolicy(d.dm_policy === 'open' ? 'open' : 'members')
           if (user) setUser({ ...user, avatar_url: d.avatar_url })
           setFetched(true)
         })
@@ -260,8 +262,35 @@ export default function ProfilePage() {
               />
               <p className="text-xs text-zinc-500 mt-1">Shown in chat instead of your username. 32 characters max.</p>
             </div>
+            {/* DM policy toggle */}
+            <div className="flex items-center justify-between rounded-lg bg-slate-800/50 border border-slate-700 px-4 py-3">
+              <div className="flex-1 min-w-0">
+                <label htmlFor="dm-policy-toggle" className="text-sm font-medium text-zinc-200 cursor-pointer">
+                  Allow direct messages from anyone
+                </label>
+                <p className="text-xs text-zinc-500 mt-0.5">
+                  When off, only people sharing a channel with you can send DMs
+                </p>
+              </div>
+              <button
+                id="dm-policy-toggle"
+                type="button"
+                role="switch"
+                aria-checked={dmPolicy === 'open'}
+                onClick={() => setDmPolicy(dmPolicy === 'open' ? 'members' : 'open')}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-500/50 ${
+                  dmPolicy === 'open' ? 'bg-indigo-600' : 'bg-zinc-700'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                    dmPolicy === 'open' ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
             <button
-              onClick={() => saveMutation.mutate(displayName)}
+              onClick={() => saveMutation.mutate({ display_name: displayName, dm_policy: dmPolicy })}
               disabled={saveMutation.isPending}
               className="w-full py-2 px-4 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg flex items-center justify-center gap-2"
             >
@@ -271,7 +300,7 @@ export default function ProfilePage() {
             {saved && (
               <div className="flex items-center gap-2 text-sm text-emerald-400 bg-emerald-500/10 rounded-lg px-3 py-2">
                 <CheckCircle className="h-4 w-4" />
-                Display name saved successfully!
+                Profile saved successfully!
               </div>
             )}
           </div>

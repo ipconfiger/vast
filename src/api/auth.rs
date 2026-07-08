@@ -274,12 +274,14 @@ pub struct ProfileResponse {
     pub username: String,
     pub display_name: String,
     pub avatar_url: String,
+    pub dm_policy: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateProfileRequest {
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
+    pub dm_policy: Option<String>,
 }
 
 /// GET /api/auth/profile
@@ -287,8 +289,8 @@ pub async fn get_profile(
     auth: AuthenticatedUser,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ProfileResponse>, AppError> {
-    let (username, display_name, avatar_url) = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT username, display_name, avatar_url FROM users WHERE id = ?",
+    let (username, display_name, avatar_url, dm_policy) = sqlx::query_as::<_, (String, String, String, String)>(
+        "SELECT username, display_name, avatar_url, dm_policy FROM users WHERE id = ?",
     )
     .bind(&auth.0)
     .fetch_one(&state.pool)
@@ -298,6 +300,7 @@ pub async fn get_profile(
         username,
         display_name,
         avatar_url,
+        dm_policy,
     }))
 }
 
@@ -324,8 +327,21 @@ pub async fn update_profile(
         sqlx::query("UPDATE users SET avatar_url = ? WHERE id = ?")
             .bind(url.trim()).bind(&auth.0).execute(&state.pool).await?;
     }
-    let (username, display_name, avatar_url) = sqlx::query_as::<_, (String, String, String)>(
-        "SELECT username, display_name, avatar_url FROM users WHERE id = ?",
+    if let Some(ref policy) = body.dm_policy {
+        let trimmed = policy.trim();
+        if trimmed != "open" && trimmed != "members" {
+            return Err(AppError::BadRequest(
+                "dm_policy must be 'open' or 'members'".into(),
+            ));
+        }
+        sqlx::query("UPDATE users SET dm_policy = ? WHERE id = ?")
+            .bind(trimmed)
+            .bind(&auth.0)
+            .execute(&state.pool)
+            .await?;
+    }
+    let (username, display_name, avatar_url, dm_policy) = sqlx::query_as::<_, (String, String, String, String)>(
+        "SELECT username, display_name, avatar_url, dm_policy FROM users WHERE id = ?",
     )
     .bind(&auth.0)
     .fetch_one(&state.pool)
@@ -335,6 +351,7 @@ pub async fn update_profile(
         username,
         display_name,
         avatar_url,
+        dm_policy,
     }))
 }
 

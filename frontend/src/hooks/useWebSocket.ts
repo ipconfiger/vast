@@ -296,6 +296,17 @@ function useWsEventSync(manager: WebSocketManager): void {
           ),
         })
       }),
+      manager.subscribe('dm_created', () => {
+        queryClient.invalidateQueries({ queryKey: ['dms'] })
+      }),
+      manager.subscribe('dm_closed', (data) => {
+        const ev = data as { dm_channel_id: string }
+        if (!ev || typeof ev.dm_channel_id !== 'string') return
+        queryClient.invalidateQueries({ queryKey: ['dms'] })
+        if (window.location.pathname.startsWith(`/channels/${ev.dm_channel_id}`)) {
+          window.location.href = '/'
+        }
+      }),
       manager.subscribe('member_added', (data) => {
         const ev = data as { channel_id: string; user_id: string; username?: string }
         if (!ev || typeof ev.channel_id !== 'string' || typeof ev.user_id !== 'string') return

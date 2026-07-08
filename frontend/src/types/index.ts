@@ -5,6 +5,7 @@ export interface User {
   avatar_url?: string
   status?: string
   created_at: string
+  dm_policy?: 'open' | 'members'
 }
 
 export interface Channel {

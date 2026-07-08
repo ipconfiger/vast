@@ -61,7 +61,7 @@ pub struct ConnectionMeta {
 pub struct ConnectionPool {
     user_connections: DashMap<UserId, DashSet<ConnectionId>>,
     connections: DashMap<ConnectionId, ConnectionMeta>,
-    global_tx: broadcast::Sender<ServerEvent>,
+    pub(crate) global_tx: broadcast::Sender<ServerEvent>,
     typing_timeouts: DashMap<String, Instant>,
 }
 
