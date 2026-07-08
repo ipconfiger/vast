@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { apiClient } from './client'
+import { apiClient, refreshAccessToken } from './client'
 import type { Channel, Message } from '../types'
 import { useMessageStore } from '../stores/messageStore'
 import { useAuthStore } from '../stores/authStore'
@@ -95,28 +95,43 @@ export function useJoinChannel() {
   })
 }
 
-export function downloadChannelArchive(channelId: string, channelName: string): Promise<void> {
-  const token = useAuthStore.getState().token
+export async function downloadChannelArchive(channelId: string, channelName: string): Promise<void> {
+  const store = useAuthStore.getState()
+  let token = store.token
   if (!token) {
     console.error('Cannot download archive: not authenticated')
-    return Promise.resolve()
+    return
   }
-  return fetch(`${API_BASE}/channels/${channelId}/archive/download`, {
+  if (store.isTokenExpired()) {
+    const newToken = await refreshAccessToken()
+    if (!newToken) throw new Error('Session expired')
+    token = newToken
+  }
+
+  let res = await fetch(`${API_BASE}/channels/${channelId}/archive/download`, {
     headers: { Authorization: `Bearer ${token}` },
-  }).then(res => {
-    if (!res.ok) throw new Error('Download failed')
-    return res.blob()
-  }).then(blob => {
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    const safeName = channelName.replace(/[\/\\:*?"<>|]/g, '_')
-    a.download = `${safeName}-archive.zip`
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    URL.revokeObjectURL(url)
   })
+
+  if (res.status === 401) {
+    const newToken = await refreshAccessToken()
+    if (!newToken) throw new Error('Session expired')
+    res = await fetch(`${API_BASE}/channels/${channelId}/archive/download`, {
+      headers: { Authorization: `Bearer ${newToken}` },
+    })
+  }
+
+  if (!res.ok) throw new Error(`Download failed: ${res.status}`)
+
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  const safeName = channelName.replace(/[\/\\:*?"<>|\x00-\x1f]/g, '_').replace(/^[.\s]+/, '').replace(/[.\s]+$/, '') || 'channel'
+  a.download = `${safeName}-archive.zip`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
 }
 
 export function useSendMessage(channelId: string) {

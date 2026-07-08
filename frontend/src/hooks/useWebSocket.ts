@@ -325,13 +325,9 @@ function useWsEventSync(manager: WebSocketManager): void {
       manager.subscribe('channel_archived', (data) => {
         const ev = data as { channel_id: string }
         if (!ev || typeof ev.channel_id !== 'string') return
-        const archivedId = ev.channel_id
-        useChannelStore.getState().updateChannel(archivedId, { is_archived: true })
-        const currentId = useChannelStore.getState().currentChannelId
-        if (currentId === archivedId) {
-          useChannelStore.getState().setCurrentChannel(null)
-          window.location.href = '/channels'
-        }
+        useChannelStore.getState().updateChannel(ev.channel_id, { is_archived: true })
+        // Store update is sufficient — ChannelListPage re-renders showing the archived view
+        // without a destructive full-page navigation that could abort in-flight downloads.
       }),
       manager.subscribe('channel_unarchived', (data) => {
         const ev = data as { channel_id: string }

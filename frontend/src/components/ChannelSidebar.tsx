@@ -179,7 +179,7 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
       <div className="flex-1 overflow-y-auto px-2 py-2">
         {isLoading ? (
           <ChannelListSkeleton />
-        ) : channels.length === 0 ? (
+        ) : activeChannels.length === 0 ? (
           <NoChannelsEmpty onBrowse={() => setIsDiscoverOpen(true)} />
         ) : (
           <div className="flex flex-col gap-0.5">

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Settings } from 'lucide-react'
+import { Settings, Loader2 } from 'lucide-react'
 import { useParams, useNavigate } from 'react-router'
 import { ChannelSettingsModal } from '../components/ChannelSettingsModal'
 import { ChannelSidebarToggle } from '../components/ChannelSidebar'
@@ -35,7 +35,7 @@ export function ChannelListPage() {
     }
   }, [channelId, navigate])
 
-  const { data: channel } = useChannel(channelId ?? null)
+  const { data: channel, isLoading: channelLoading } = useChannel(channelId ?? null)
   const user = useAuthStore((s) => s.user)
   const isOwner = channel?.owner_id === user?.id
   const [showSettings, setShowSettings] = useState(false)
@@ -45,7 +45,11 @@ export function ChannelListPage() {
       <ChannelSidebarToggle />
       <main className="flex flex-1 flex-col min-w-0">
         {channelId ? (
-          channel?.is_archived ? (
+          channelLoading ? (
+            <div className="flex items-center justify-center h-full">
+              <Loader2 className="h-6 w-6 animate-spin text-zinc-600" />
+            </div>
+          ) : channel?.is_archived ? (
             <div className="flex flex-1 flex-col items-center justify-center gap-4">
               <div className="text-center">
                 <h2 className="text-xl font-semibold text-zinc-300 mb-2">
@@ -54,7 +58,12 @@ export function ChannelListPage() {
                 </h2>
                 <p className="text-zinc-500 text-sm mb-6">This channel has been archived.</p>
                 <div className="flex gap-3 justify-center">
-                  <button onClick={() => channel && downloadChannelArchive(channelId, channel.name)}
+                  <button onClick={() => {
+                      if (!channel) return
+                      downloadChannelArchive(channelId, channel.name).catch((err) => {
+                        console.error('Archive download failed:', err)
+                      })
+                    }}
                     className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">
                     Download Archive
                   </button>

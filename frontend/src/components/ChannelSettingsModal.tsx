@@ -69,12 +69,19 @@ export function ChannelSettingsModal({
 
   const handleArchiveToggle = () => {
     if (channel?.is_archived) {
-      unarchiveChannel.mutate(channelId)
+      unarchiveChannel.mutate(channelId, {
+        onError: () => {
+          // Error state handled by mutation library
+        }
+      })
     } else {
       archiveChannel.mutate(channelId, {
         onSuccess: () => {
-          downloadChannelArchive(channelId, channel?.name ?? 'channel')
+          downloadChannelArchive(channelId, channel?.name ?? 'channel').catch(() => {})
         },
+        onError: () => {
+          // Error state handled by mutation library
+        }
       })
     }
   }
