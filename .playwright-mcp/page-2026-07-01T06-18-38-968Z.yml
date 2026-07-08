@@ -1,9 +1,0 @@
-- generic [ref=f3e32]:
-  - img [ref=f3e34]
-  - generic [ref=f3e36]:
-    - heading "Something went wrong" [level=2] [ref=f3e37]
-    - paragraph [ref=f3e38]: An unexpected error occurred. Please try refreshing the page.
-    - generic [ref=f3e39]: channels.map is not a function
-  - button "Try Again" [ref=f3e40]:
-    - img [ref=f3e41]
-    - text: Try Again

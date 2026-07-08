@@ -1,14 +1,38 @@
+# === Build artifacts ===
 /target
-data/
 frontend/dist/
-frontend/node_modules/
 frontend/test-results/
+coverage/
+
+# === Dependencies (node_modules at any level) ===
+node_modules/
+frontend/node_modules/
+
+# === Data / databases ===
+data/
 *.db
 *.db-wal
 *.db-shm
+db/*.db
+
+# === Environment ===
 .env
+
+# === Agent / tool working dirs ===
 .omo/
 .sisyphus/
 .omc/
 .playwright-mcp/
-db/*.db
+
+# === OS / Editor ===
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# === TypeScript ===
+*.tsbuildinfo
+
+# === Logs ===
+*.log
