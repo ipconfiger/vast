@@ -7,6 +7,7 @@ pub mod files;
 pub mod invitations;
 pub mod messages;
 pub mod presence;
+pub mod push;
 pub mod reactions;
 pub mod requests;
 pub mod search;
@@ -26,6 +27,10 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/channels/{id}", get(channels::get_channel).patch(channels::update_channel))
         .route("/channels/{id}/archive", post(channels::archive_channel))
         .route("/channels/{id}/unarchive", post(channels::unarchive_channel))
+        .route(
+            "/channels/{id}/archive/download",
+            get(channels::download_channel_archive),
+        )
         .route("/channels/{channel_id}/bots", post(channels::add_bot_to_channel))
         .route("/channels/{channel_id}/messages", get(messages::get_messages).post(messages::send_message))
         .route(
@@ -61,4 +66,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/invitations/{id}/accept", put(invitations::accept_invitation))
         .route("/invitations/{id}/reject", put(invitations::reject_invitation))
         .nest("/dm", dm::dm_routes())
+        .route("/push/subscribe", post(push::subscribe_handler))
+        .route("/push/unsubscribe", delete(push::unsubscribe_handler))
+        .route("/push/resubscribe", post(push::resubscribe_handler))
 }

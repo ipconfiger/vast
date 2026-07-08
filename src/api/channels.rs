@@ -1,12 +1,16 @@
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{header, HeaderName, HeaderValue, StatusCode},
     Json,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use std::collections::HashMap;
+use std::io::{Cursor, Write};
 use std::sync::Arc;
 use uuid::Uuid;
+use zip::write::{SimpleFileOptions, ZipWriter};
+use zip::CompressionMethod;
 
 use crate::auth::middleware::AuthenticatedUser;
 use crate::error::AppError;
@@ -382,6 +386,262 @@ pub async fn unarchive_channel(
         .broadcast_to_channel(&id, &crate::ws::protocol::ServerEvent::ChannelUnarchived { channel_id });
 
     Ok(StatusCode::OK)
+}
+
+/// GET /api/channels/{id}/archive/download
+///
+/// Download a ZIP archive containing all channel messages and files.
+/// Only the channel owner can download. DM channels are rejected.
+/// The ZIP is generated on-the-fly and not persisted.
+pub async fn download_channel_archive(
+    State(state): State<Arc<AppState>>,
+    user: AuthenticatedUser,
+    Path(id): Path<String>,
+) -> Result<([(HeaderName, HeaderValue); 2], Vec<u8>), AppError> {
+    // ---- access control ----
+    let channel = sqlx::query_as::<_, Channel>(
+        "SELECT id, name, description, COALESCE(owner_id, '') as owner_id, is_direct, is_group_dm, is_archived, created_at FROM channels WHERE id = ?",
+    )
+    .bind(&id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Channel not found".to_string()))?;
+
+    if channel.is_direct {
+        return Err(AppError::Forbidden(
+            "DM channels cannot be archived".to_string(),
+        ));
+    }
+
+    if channel.owner_id != user.0 {
+        return Err(AppError::Forbidden(
+            "Only the channel owner can download the archive".to_string(),
+        ));
+    }
+
+    // ---- fetch all messages with sender info ----
+    let message_rows = sqlx::query_as::<_, ArchiveMessageRow>(
+        "SELECT m.id, m.msg_id, m.channel_id, m.sender_id, m.msg_type, m.payload, \
+         m.thread_parent_id, m.deleted_at, m.edited_at, m.created_at, \
+         COALESCE(u.username, m.sender_id) AS sender_name, \
+         COALESCE(u.display_name, '') AS sender_display_name, \
+         COALESCE(u.avatar_url, '') AS sender_avatar_url, \
+         COALESCE(u.is_bot, 0) AS is_bot \
+         FROM messages m \
+         LEFT JOIN users u ON m.sender_id = u.id \
+         WHERE m.channel_id = ? \
+         ORDER BY m.id ASC",
+    )
+    .bind(&id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    // ---- fetch non-deleted files ----
+    let file_rows = sqlx::query_as::<_, ArchiveFileRow>(
+        "SELECT id, uploader_id, channel_id, original_name, size, mime_type, extension, created_at \
+         FROM files WHERE channel_id = ? AND is_deleted = 0 ORDER BY created_at ASC",
+    )
+    .bind(&id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    // ---- build serializable structures ----
+    let messages: Vec<ArchiveMessage> = message_rows
+        .into_iter()
+        .map(|r| {
+            let payload: serde_json::Value =
+                serde_json::from_str(&r.payload).unwrap_or(serde_json::Value::Null);
+            ArchiveMessage {
+                msg_id: r.msg_id,
+                sender_id: r.sender_id,
+                sender_name: r.sender_name,
+                sender_display_name: r.sender_display_name,
+                sender_avatar_url: r.sender_avatar_url,
+                is_bot: r.is_bot,
+                msg_type: r.msg_type,
+                payload,
+                thread_parent_id: r.thread_parent_id,
+                deleted_at: r.deleted_at,
+                edited_at: r.edited_at,
+                created_at: r.created_at,
+            }
+        })
+        .collect();
+
+    let info = ArchiveChannelInfo {
+        channel_id: channel.id.clone(),
+        name: channel.name.clone(),
+        description: channel.description.clone(),
+        owner_id: channel.owner_id.clone(),
+        created_at: channel.created_at,
+        message_count: messages.len(),
+        file_count: file_rows.len(),
+        exported_at: chrono::Utc::now().timestamp(),
+    };
+
+    // ---- build ZIP archive in memory ----
+    let mut cursor = Cursor::new(Vec::new());
+    let mut archive = ZipWriter::new(&mut cursor);
+    let options = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated);
+
+    // messages.json
+    let messages_json = serde_json::to_vec_pretty(&messages)
+        .map_err(|e| AppError::Internal(format!("Failed to serialize messages: {e}")))?;
+    archive
+        .start_file("messages.json", options)
+        .map_err(|e| AppError::Internal(format!("ZIP error: {e}")))?;
+    archive
+        .write_all(&messages_json)
+        .map_err(|e| AppError::Internal(format!("ZIP write error: {e}")))?;
+
+    // channel_info.json
+    let info_json = serde_json::to_vec_pretty(&info)
+        .map_err(|e| AppError::Internal(format!("Failed to serialize channel info: {e}")))?;
+    archive
+        .start_file("channel_info.json", options)
+        .map_err(|e| AppError::Internal(format!("ZIP error: {e}")))?;
+    archive
+        .write_all(&info_json)
+        .map_err(|e| AppError::Internal(format!("ZIP write error: {e}")))?;
+
+    // files/
+    let mut name_counts: HashMap<String, usize> = HashMap::new();
+    let upload_dir = state.config.data_dir.join("uploads");
+
+    for f in &file_rows {
+        let file_path = upload_dir.join(format!("{}.{}", f.id, f.extension));
+        match tokio::fs::read(&file_path).await {
+            Ok(data) => {
+                let safe_name = dedup_filename(&f.original_name, &mut name_counts);
+                let zip_path = format!("files/{safe_name}");
+                if let Err(e) = archive.start_file(&zip_path, options) {
+                    tracing::warn!(file_id = %f.id, error = %e, "Failed to add file entry to ZIP");
+                    continue;
+                }
+                if let Err(e) = archive.write_all(&data) {
+                    tracing::warn!(file_id = %f.id, error = %e, "Failed to write file data to ZIP");
+                    continue;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(file_id = %f.id, error = %e, "File missing on disk, skipping from archive");
+            }
+        }
+    }
+
+    let _ = archive
+        .finish()
+        .map_err(|e| AppError::Internal(format!("ZIP error: {e}")))?;
+    let zip_bytes = cursor.into_inner();
+
+    // ---- response headers ----
+    let sanitized_name = sanitize_channel_name(&channel.name);
+    let content_disposition = format!("attachment; filename=\"{sanitized_name}-archive.zip\"");
+    let disposition_value = HeaderValue::try_from(content_disposition)
+        .map_err(|e| AppError::Internal(format!("Invalid header value: {e}")))?;
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, HeaderValue::from_static("application/zip")),
+            (header::CONTENT_DISPOSITION, disposition_value),
+        ],
+        zip_bytes,
+    ))
+}
+
+// ---- private helpers ----
+
+/// Sanitize a channel name for use in a filename by replacing
+/// characters that are not allowed in filenames with underscores.
+fn sanitize_channel_name(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => c,
+        })
+        .collect()
+}
+
+/// Deduplicate filenames for the ZIP archive.
+/// Returns the original name on first use, and `{stem} ({n}).{ext}` on collisions.
+fn dedup_filename(original_name: &str, counts: &mut HashMap<String, usize>) -> String {
+    let count = counts.entry(original_name.to_string()).or_insert(0);
+    if *count == 0 {
+        *count += 1;
+        return original_name.to_string();
+    }
+    *count += 1;
+    let n = *count - 1;
+    if let Some(dot_pos) = original_name.rfind('.') {
+        let stem = &original_name[..dot_pos];
+        let ext = &original_name[dot_pos..];
+        format!("{stem} ({n}){ext}")
+    } else {
+        format!("{original_name} ({n})")
+    }
+}
+
+// ---- private FromRow structs ----
+
+#[derive(Debug, FromRow)]
+struct ArchiveMessageRow {
+    id: i64,
+    msg_id: String,
+    channel_id: String,
+    sender_id: String,
+    msg_type: String,
+    payload: String,
+    thread_parent_id: Option<i64>,
+    deleted_at: Option<i64>,
+    edited_at: Option<i64>,
+    created_at: i64,
+    sender_name: String,
+    sender_display_name: String,
+    sender_avatar_url: String,
+    is_bot: bool,
+}
+
+#[derive(Debug, FromRow)]
+struct ArchiveFileRow {
+    id: String,
+    uploader_id: Option<String>,
+    channel_id: Option<String>,
+    original_name: String,
+    size: i64,
+    mime_type: String,
+    extension: String,
+    created_at: i64,
+}
+
+// ---- serialization structs ----
+
+#[derive(Serialize)]
+struct ArchiveMessage {
+    msg_id: String,
+    sender_id: String,
+    sender_name: String,
+    sender_display_name: String,
+    sender_avatar_url: String,
+    is_bot: bool,
+    msg_type: String,
+    payload: serde_json::Value,
+    thread_parent_id: Option<i64>,
+    deleted_at: Option<i64>,
+    edited_at: Option<i64>,
+    created_at: i64,
+}
+
+#[derive(Serialize)]
+struct ArchiveChannelInfo {
+    channel_id: String,
+    name: String,
+    description: String,
+    owner_id: String,
+    created_at: i64,
+    message_count: usize,
+    file_count: usize,
+    exported_at: i64,
 }
 
 /// GET /api/bots
@@ -1778,5 +2038,691 @@ mod tests {
         )
         .unwrap();
         assert_eq!(body.as_array().unwrap().len(), 0);
+    }
+
+    // ── Archive Download ────────────────────────────────────────────────
+
+    /// Helper: make a GET request and return status, headers, and raw body.
+    async fn download(
+        app: &mut Router,
+        channel_id: &str,
+        token: &str,
+    ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(&format!("/channels/{channel_id}/archive/download"))
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, headers, body.to_vec())
+    }
+
+    /// Helper: create a channel via the API and return its ID.
+    async fn create_test_channel(app: &mut Router, name: &str, token: &str) -> String {
+        let resp = request(
+            app,
+            Method::POST,
+            "/channels",
+            Some(json!({"name": name})),
+            token,
+        )
+        .await;
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        body["id"].as_str().unwrap().to_string()
+    }
+
+    /// Helper: insert a message directly into the DB.
+    async fn insert_message(
+        pool: &sqlx::SqlitePool,
+        channel_id: &str,
+        sender_id: &str,
+        msg_type: &str,
+        payload: &str,
+        created_at: i64,
+    ) -> String {
+        let msg_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO messages (msg_id, channel_id, sender_id, msg_type, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&msg_id)
+        .bind(channel_id)
+        .bind(sender_id)
+        .bind(msg_type)
+        .bind(payload)
+        .bind(created_at)
+        .execute(pool)
+        .await
+        .expect("insert message");
+        msg_id
+    }
+
+    /// Helper: create a setup with a custom data directory and return
+    /// (Router, pool, user_id, token, data_dir).
+    async fn setup_with_data_dir() -> (Router, sqlx::SqlitePool, String, String, std::path::PathBuf) {
+        let data_dir =
+            std::env::temp_dir().join(format!("vast-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(data_dir.join("uploads")).expect("create uploads dir");
+
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("Failed to create in-memory DB");
+        sqlx::migrate!("db/migrations")
+            .run(&pool)
+            .await
+            .expect("Failed to run migrations");
+
+        let user_id = Uuid::new_v4().to_string();
+        let password_hash =
+            crate::auth::hash_password("testpass").expect("Failed to hash password");
+        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)")
+            .bind(&user_id)
+            .bind("testuser")
+            .bind(&password_hash)
+            .execute(&pool)
+            .await
+            .expect("Failed to insert test user");
+
+        let secret = "test-secret";
+        // SAFETY: test-only; single-threaded, no concurrent readers
+        unsafe { std::env::set_var("JWT_SECRET", secret) };
+        let token = crate::auth::create_token_pair(&user_id, secret, 0)
+            .expect("Failed to create token")
+            .access_token;
+
+        let state = Arc::new(AppState {
+            pool: pool.clone(),
+            ws_pool: Arc::new(ws::ConnectionPool::new()),
+            config: crate::AppConfig {
+                jwt_secret: secret.to_string(),
+                invite_code: "TEST".to_string(),
+                data_dir: data_dir.clone(),
+                ..crate::AppConfig::test_default()
+            },
+        });
+
+        let app = crate::api::routes().with_state(state);
+        (app, pool, user_id, token, data_dir)
+    }
+
+    // 1. Empty channel produces valid ZIP with empty messages and zero counts.
+    #[tokio::test]
+    async fn test_download_archive_empty_channel() {
+        let (mut app, _pool, _user_id, token) = setup().await;
+        let channel_id = create_test_channel(&mut app, "Empty Channel", &token).await;
+
+        let (status, headers, zip_bytes) = download(&mut app, &channel_id, &token).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            headers
+                .get(header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "application/zip"
+        );
+        assert!(
+            headers
+                .get(header::CONTENT_DISPOSITION)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("Empty Channel-archive.zip")
+        );
+
+        let cursor = Cursor::new(zip_bytes);
+        let mut archive = zip::ZipArchive::new(cursor).expect("valid ZIP");
+        assert_eq!(archive.len(), 2);
+
+        // Verify messages.json
+        let msgs: Value = {
+            let entry = archive.by_name("messages.json").unwrap();
+            serde_json::from_reader(entry).unwrap()
+        };
+        assert!(msgs.as_array().unwrap().is_empty());
+
+        // Verify channel_info.json
+        let info: Value = {
+            let entry = archive.by_name("channel_info.json").unwrap();
+            serde_json::from_reader(entry).unwrap()
+        };
+        assert_eq!(info["channel_id"], channel_id);
+        assert_eq!(info["name"], "Empty Channel");
+        assert_eq!(info["message_count"], 0);
+        assert_eq!(info["file_count"], 0);
+        assert!(info["exported_at"].as_i64().unwrap() > 0);
+    }
+
+    // 2. Messages appear in correct order with sender info.
+    #[tokio::test]
+    async fn test_download_archive_with_messages() {
+        let (mut app, pool, user_id, token) = setup().await;
+        let channel_id = create_test_channel(&mut app, "Msg Channel", &token).await;
+
+        let now = chrono::Utc::now().timestamp();
+        insert_message(&pool, &channel_id, &user_id, "text", r#"{"text":"first"}"#, now).await;
+        insert_message(&pool, &channel_id, &user_id, "text", r#"{"text":"second"}"#, now + 1).await;
+        insert_message(&pool, &channel_id, &user_id, "text", r#"{"text":"third"}"#, now + 2).await;
+
+        let (status, _, zip_bytes) = download(&mut app, &channel_id, &token).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let cursor = Cursor::new(zip_bytes);
+        let mut archive = zip::ZipArchive::new(cursor).expect("valid ZIP");
+        let msgs: Vec<Value> = {
+            let entry = archive.by_name("messages.json").unwrap();
+            serde_json::from_reader(entry).unwrap()
+        };
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0]["payload"]["text"], "first");
+        assert_eq!(msgs[1]["payload"]["text"], "second");
+        assert_eq!(msgs[2]["payload"]["text"], "third");
+        for msg in &msgs {
+            assert_eq!(msg["sender_id"], user_id);
+            assert_eq!(msg["sender_name"], "testuser");
+            assert!(!msg["is_bot"].as_bool().unwrap());
+        }
+    }
+
+    // 3. Thread messages are included flat with thread_parent_id.
+    #[tokio::test]
+    async fn test_download_archive_with_thread_messages() {
+        let (mut app, pool, user_id, token) = setup().await;
+        let channel_id = create_test_channel(&mut app, "Thread Channel", &token).await;
+
+        let now = chrono::Utc::now().timestamp();
+        let parent_id = insert_message(&pool, &channel_id, &user_id, "text", r#"{"text":"parent"}"#, now).await;
+        // Insert replies with thread_parent_id pointing to the parent message's internal id
+        let parent_internal_id: i64 = sqlx::query_scalar(
+            "SELECT id FROM messages WHERE msg_id = ?",
+        )
+        .bind(&parent_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query("INSERT INTO messages (msg_id, channel_id, sender_id, msg_type, payload, thread_parent_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            .bind(Uuid::new_v4().to_string())
+            .bind(&channel_id)
+            .bind(&user_id)
+            .bind("text")
+            .bind(r#"{"text":"reply1"}"#)
+            .bind(parent_internal_id)
+            .bind(now + 1)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO messages (msg_id, channel_id, sender_id, msg_type, payload, thread_parent_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            .bind(Uuid::new_v4().to_string())
+            .bind(&channel_id)
+            .bind(&user_id)
+            .bind("text")
+            .bind(r#"{"text":"reply2"}"#)
+            .bind(parent_internal_id)
+            .bind(now + 2)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (status, _, zip_bytes) = download(&mut app, &channel_id, &token).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let cursor = Cursor::new(zip_bytes);
+        let mut archive = zip::ZipArchive::new(cursor).expect("valid ZIP");
+        let msgs: Vec<Value> = {
+            let entry = archive.by_name("messages.json").unwrap();
+            serde_json::from_reader(entry).unwrap()
+        };
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0]["payload"]["text"], "parent");
+        assert!(msgs[0]["thread_parent_id"].is_null());
+        assert_eq!(msgs[1]["payload"]["text"], "reply1");
+        assert_eq!(msgs[1]["thread_parent_id"].as_i64().unwrap(), parent_internal_id);
+        assert_eq!(msgs[2]["payload"]["text"], "reply2");
+    }
+
+    // 4. Soft-deleted messages are included with deleted_at set.
+    #[tokio::test]
+    async fn test_download_archive_includes_deleted_messages() {
+        let (mut app, pool, user_id, token) = setup().await;
+        let channel_id = create_test_channel(&mut app, "Deleted Msg Channel", &token).await;
+
+        let now = chrono::Utc::now().timestamp();
+        let msg_id = insert_message(&pool, &channel_id, &user_id, "text", r#"{"text":"alive"}"#, now).await;
+        let deleted_msg_id = Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO messages (msg_id, channel_id, sender_id, msg_type, payload, deleted_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            .bind(&deleted_msg_id)
+            .bind(&channel_id)
+            .bind(&user_id)
+            .bind("text")
+            .bind(r#"{"text":"deleted"}"#)
+            .bind(now + 10)
+            .bind(now + 1)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (status, _, zip_bytes) = download(&mut app, &channel_id, &token).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let cursor = Cursor::new(zip_bytes);
+        let mut archive = zip::ZipArchive::new(cursor).expect("valid ZIP");
+        let msgs: Vec<Value> = {
+            let entry = archive.by_name("messages.json").unwrap();
+            serde_json::from_reader(entry).unwrap()
+        };
+        assert_eq!(msgs.len(), 2);
+        let alive = msgs.iter().find(|m| m["msg_id"] == msg_id).unwrap();
+        assert!(alive["deleted_at"].is_null());
+        let deleted = msgs.iter().find(|m| m["msg_id"] == deleted_msg_id).unwrap();
+        assert!(deleted["deleted_at"].as_i64().is_some());
+    }
+
+    // 5. Files appear under files/ in the ZIP.
+    #[tokio::test]
+    async fn test_download_archive_with_files() {
+        let (mut app, pool, user_id, token, data_dir) = setup_with_data_dir().await;
+        let channel_id = create_test_channel(&mut app, "File Channel", &token).await;
+
+        let now = chrono::Utc::now().timestamp();
+        let file_id1 = Uuid::new_v4().to_string();
+        let file_id2 = Uuid::new_v4().to_string();
+
+        // Insert file rows
+        sqlx::query("INSERT INTO files (id, uploader_id, channel_id, original_name, storage_path, size, mime_type, extension, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(&file_id1)
+            .bind(&user_id)
+            .bind(&channel_id)
+            .bind("hello.txt")
+            .bind("uploads/hello.txt")
+            .bind(13)
+            .bind("text/plain")
+            .bind("txt")
+            .bind(now)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO files (id, uploader_id, channel_id, original_name, storage_path, size, mime_type, extension, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(&file_id2)
+            .bind(&user_id)
+            .bind(&channel_id)
+            .bind("data.json")
+            .bind("uploads/data.json")
+            .bind(18)
+            .bind("application/json")
+            .bind("json")
+            .bind(now + 1)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Write physical files
+        std::fs::write(
+            data_dir.join("uploads").join(format!("{file_id1}.txt")),
+            b"Hello, World!",
+        )
+        .unwrap();
+        std::fs::write(
+            data_dir.join("uploads").join(format!("{file_id2}.json")),
+            b"{\"key\": \"value\"}",
+        )
+        .unwrap();
+
+        let (status, _, zip_bytes) = download(&mut app, &channel_id, &token).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let cursor = Cursor::new(zip_bytes);
+        let mut archive = zip::ZipArchive::new(cursor).expect("valid ZIP");
+
+        // Verify files exist
+        let hello: Vec<u8> = {
+            let mut entry = archive.by_name("files/hello.txt").unwrap();
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut buf).unwrap();
+            buf
+        };
+        assert_eq!(hello, b"Hello, World!");
+
+        let data: Vec<u8> = {
+            let mut entry = archive.by_name("files/data.json").unwrap();
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut buf).unwrap();
+            buf
+        };
+        assert_eq!(data, b"{\"key\": \"value\"}");
+
+        // Verify channel_info has file_count = 2
+        let info: Value = {
+            let entry = archive.by_name("channel_info.json").unwrap();
+            serde_json::from_reader(entry).unwrap()
+        };
+        assert_eq!(info["file_count"], 2);
+    }
+
+    // 6. Soft-deleted files are excluded.
+    #[tokio::test]
+    async fn test_download_archive_excludes_deleted_files() {
+        let (mut app, pool, user_id, token, data_dir) = setup_with_data_dir().await;
+        let channel_id = create_test_channel(&mut app, "DelFile Channel", &token).await;
+
+        let now = chrono::Utc::now().timestamp();
+        let active_id = Uuid::new_v4().to_string();
+        let deleted_id = Uuid::new_v4().to_string();
+
+        sqlx::query("INSERT INTO files (id, uploader_id, channel_id, original_name, storage_path, size, mime_type, extension, is_deleted, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)")
+            .bind(&active_id)
+            .bind(&user_id)
+            .bind(&channel_id)
+            .bind("active.txt")
+            .bind("uploads/active.txt")
+            .bind(7)
+            .bind("text/plain")
+            .bind("txt")
+            .bind(now)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO files (id, uploader_id, channel_id, original_name, storage_path, size, mime_type, extension, is_deleted, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)")
+            .bind(&deleted_id)
+            .bind(&user_id)
+            .bind(&channel_id)
+            .bind("deleted.txt")
+            .bind("uploads/deleted.txt")
+            .bind(9)
+            .bind("text/plain")
+            .bind("txt")
+            .bind(now + 1)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        std::fs::write(data_dir.join("uploads").join(format!("{active_id}.txt")), b"active").unwrap();
+        std::fs::write(data_dir.join("uploads").join(format!("{deleted_id}.txt")), b"deleted").unwrap();
+
+        let (status, _, zip_bytes) = download(&mut app, &channel_id, &token).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let cursor = Cursor::new(zip_bytes);
+        let mut archive = zip::ZipArchive::new(cursor).expect("valid ZIP");
+        assert!(archive.by_name("files/active.txt").is_ok());
+        assert!(archive.by_name("files/deleted.txt").is_err());
+
+        let info: Value = {
+            let entry = archive.by_name("channel_info.json").unwrap();
+            serde_json::from_reader(entry).unwrap()
+        };
+        assert_eq!(info["file_count"], 1);
+    }
+
+    // 7. Non-owner member gets 403.
+    #[tokio::test]
+    async fn test_download_archive_non_owner_forbidden() {
+        let (mut app, pool, _, owner_token) = setup().await;
+        let channel_id = create_test_channel(&mut app, "Owner Channel", &owner_token).await;
+
+        // Create second user and add as member
+        let user2_id = Uuid::new_v4().to_string();
+        let pw = crate::auth::hash_password("pass2").unwrap();
+        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)")
+            .bind(&user2_id)
+            .bind("member")
+            .bind(&pw)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO channel_members (channel_id, user_id, role) VALUES (?, ?, 'member')")
+            .bind(&channel_id)
+            .bind(&user2_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let secret = "test-secret";
+        let member_token = crate::auth::create_token_pair(&user2_id, secret, 0)
+            .unwrap()
+            .access_token;
+
+        let (status, _, _) = download(&mut app, &channel_id, &member_token).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    // 8. Non-member gets 403.
+    #[tokio::test]
+    async fn test_download_archive_non_member_forbidden() {
+        let (mut app, pool, _, owner_token) = setup().await;
+        let channel_id = create_test_channel(&mut app, "Private Channel", &owner_token).await;
+
+        let user2_id = Uuid::new_v4().to_string();
+        let pw = crate::auth::hash_password("pass2").unwrap();
+        sqlx::query("INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)")
+            .bind(&user2_id)
+            .bind("outsider")
+            .bind(&pw)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let secret = "test-secret";
+        let outsider_token = crate::auth::create_token_pair(&user2_id, secret, 0)
+            .unwrap()
+            .access_token;
+
+        let (status, _, _) = download(&mut app, &channel_id, &outsider_token).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    // 9. DM channel is rejected with 403.
+    #[tokio::test]
+    async fn test_download_archive_dm_rejected() {
+        let (mut app, pool, user_id, token) = setup().await;
+
+        // Create a DM channel (direct insert with is_direct = 1)
+        let dm_id = Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().timestamp();
+        sqlx::query("INSERT INTO channels (id, name, description, owner_id, is_direct, created_at) VALUES (?, ?, '', ?, 1, ?)")
+            .bind(&dm_id)
+            .bind("DM")
+            .bind(&user_id)
+            .bind(now)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Also add user as member so they count as a member
+        sqlx::query("INSERT INTO channel_members (channel_id, user_id, role) VALUES (?, ?, 'owner')")
+            .bind(&dm_id)
+            .bind(&user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (status, _, _) = download(&mut app, &dm_id, &token).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    // 10. Non-existent channel returns 404.
+    #[tokio::test]
+    async fn test_download_archive_not_found() {
+        let (mut app, _, _, token) = setup().await;
+        let fake_id = "nonexistent-channel-id";
+        let (status, _, _) = download(&mut app, fake_id, &token).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    // 11. Duplicate filenames are deduplicated.
+    #[tokio::test]
+    async fn test_download_archive_duplicate_filenames() {
+        let (mut app, pool, user_id, token, data_dir) = setup_with_data_dir().await;
+        let channel_id = create_test_channel(&mut app, "Dup Channel", &token).await;
+
+        let now = chrono::Utc::now().timestamp();
+        let f1 = Uuid::new_v4().to_string();
+        let f2 = Uuid::new_v4().to_string();
+
+        sqlx::query("INSERT INTO files (id, uploader_id, channel_id, original_name, storage_path, size, mime_type, extension, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(&f1)
+            .bind(&user_id)
+            .bind(&channel_id)
+            .bind("report.pdf")
+            .bind("uploads/report.pdf")
+            .bind(100)
+            .bind("application/pdf")
+            .bind("pdf")
+            .bind(now)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO files (id, uploader_id, channel_id, original_name, storage_path, size, mime_type, extension, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(&f2)
+            .bind(&user_id)
+            .bind(&channel_id)
+            .bind("report.pdf")
+            .bind("uploads/report.pdf")
+            .bind(200)
+            .bind("application/pdf")
+            .bind("pdf")
+            .bind(now + 1)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        std::fs::write(data_dir.join("uploads").join(format!("{f1}.pdf")), b"first").unwrap();
+        std::fs::write(data_dir.join("uploads").join(format!("{f2}.pdf")), b"second").unwrap();
+
+        let (status, _, zip_bytes) = download(&mut app, &channel_id, &token).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let cursor = Cursor::new(zip_bytes);
+        let mut archive = zip::ZipArchive::new(cursor).expect("valid ZIP");
+
+        let first: Vec<u8> = {
+            let mut entry = archive.by_name("files/report.pdf").unwrap();
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut buf).unwrap();
+            buf
+        };
+        assert_eq!(first, b"first");
+
+        let second: Vec<u8> = {
+            let mut entry = archive.by_name("files/report (1).pdf").unwrap();
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut buf).unwrap();
+            buf
+        };
+        assert_eq!(second, b"second");
+    }
+
+    // 12. Missing physical file is gracefully skipped.
+    #[tokio::test]
+    async fn test_download_archive_missing_file_on_disk() {
+        let (mut app, pool, user_id, token, data_dir) = setup_with_data_dir().await;
+        let channel_id = create_test_channel(&mut app, "Missing Channel", &token).await;
+
+        let now = chrono::Utc::now().timestamp();
+        let present_id = Uuid::new_v4().to_string();
+        let missing_id = Uuid::new_v4().to_string();
+
+        sqlx::query("INSERT INTO files (id, uploader_id, channel_id, original_name, storage_path, size, mime_type, extension, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(&present_id)
+            .bind(&user_id)
+            .bind(&channel_id)
+            .bind("present.txt")
+            .bind("uploads/present.txt")
+            .bind(8)
+            .bind("text/plain")
+            .bind("txt")
+            .bind(now)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO files (id, uploader_id, channel_id, original_name, storage_path, size, mime_type, extension, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(&missing_id)
+            .bind(&user_id)
+            .bind(&channel_id)
+            .bind("missing.txt")
+            .bind("uploads/missing.txt")
+            .bind(9)
+            .bind("text/plain")
+            .bind("txt")
+            .bind(now + 1)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Only write the present file; missing file is never created
+        std::fs::write(
+            data_dir.join("uploads").join(format!("{present_id}.txt")),
+            b"present",
+        )
+        .unwrap();
+
+        let (status, _, zip_bytes) = download(&mut app, &channel_id, &token).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let cursor = Cursor::new(zip_bytes);
+        let mut archive = zip::ZipArchive::new(cursor).expect("valid ZIP");
+
+        // Present file is included
+        let present: Vec<u8> = {
+            let mut entry = archive.by_name("files/present.txt").unwrap();
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut buf).unwrap();
+            buf
+        };
+        assert_eq!(present, b"present");
+
+        // Missing file is not in the archive
+        assert!(archive.by_name("files/missing.txt").is_err());
+
+        // file_count in channel_info is still 2 (the DB count)
+        let info: Value = {
+            let entry = archive.by_name("channel_info.json").unwrap();
+            serde_json::from_reader(entry).unwrap()
+        };
+        assert_eq!(info["file_count"], 2);
+    }
+
+    // 13. Channel name is sanitized in Content-Disposition filename.
+    #[tokio::test]
+    async fn test_download_archive_sanitized_filename() {
+        let (mut app, pool, user_id, token) = setup().await;
+
+        // Create channel with special characters in the name
+        let channel_id = Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().timestamp();
+        sqlx::query("INSERT INTO channels (id, name, description, owner_id, created_at) VALUES (?, ?, '', ?, ?)")
+            .bind(&channel_id)
+            .bind("report/final:2026")
+            .bind(&user_id)
+            .bind(now)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO channel_members (channel_id, user_id, role) VALUES (?, ?, 'owner')")
+            .bind(&channel_id)
+            .bind(&user_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (status, headers, _zip_bytes) = download(&mut app, &channel_id, &token).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let disposition = headers
+            .get(header::CONTENT_DISPOSITION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(disposition.contains("report_final_2026-archive.zip"));
+        assert!(!disposition.contains("/"));
+        assert!(!disposition.contains(":"));
     }
 }

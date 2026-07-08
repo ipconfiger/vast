@@ -4,6 +4,7 @@ pub mod bot;
 pub mod db;
 pub mod embed;
 pub mod error;
+pub mod push;
 pub mod ws;
 
 use axum::{
@@ -138,6 +139,10 @@ pub fn api_routes() -> Router<Arc<AppState>> {
             post(api::channels::unarchive_channel),
         )
         .route(
+            "/channels/{id}/archive/download",
+            get(api::channels::download_channel_archive),
+        )
+        .route(
             "/channels/{channel_id}/bots",
             post(api::channels::add_bot_to_channel),
         )
@@ -211,8 +216,12 @@ pub fn api_routes() -> Router<Arc<AppState>> {
         )
         .nest("/channels", api::channel_members::routes())
         .nest("/dm", api::dm::dm_routes())
+        .route("/push/vapid-public-key", get(push::vapid_public_key_handler))
         .nest("/auth", api::auth::auth_routes())
         .nest("/admin", api::admin::admin_routes())
+        .route("/push/subscribe", post(api::push::subscribe_handler))
+        .route("/push/unsubscribe", delete(api::push::unsubscribe_handler))
+        .route("/push/resubscribe", post(api::push::resubscribe_handler))
 }
 
 /// Build the full application router (API + WS + frontend fallback)

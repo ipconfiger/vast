@@ -32,6 +32,10 @@ rustls = "0.23"
 rustls-pemfile = "2.2"
 reqwest = { version = "0.12", features = ["rustls-tls", "json"], default-features = false }
 urlencoding = "2"
+web-push = "0.11"
+openssl = "0.10"
+base64 = "0.22"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tokio-tungstenite = "0.24"
