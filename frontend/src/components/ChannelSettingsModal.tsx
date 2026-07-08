@@ -6,7 +6,7 @@ import {
   Archive,
   ArchiveRestore,
 } from 'lucide-react'
-import { useChannel } from '../api/channels'
+import { useChannel, downloadChannelArchive } from '../api/channels'
 import { useUpdateChannel, useArchiveChannel, useUnarchiveChannel } from '../api/permissions'
 import { useAuthStore } from '../stores/authStore'
 import { MemberList } from './MemberList'
@@ -71,7 +71,11 @@ export function ChannelSettingsModal({
     if (channel?.is_archived) {
       unarchiveChannel.mutate(channelId)
     } else {
-      archiveChannel.mutate(channelId)
+      archiveChannel.mutate(channelId, {
+        onSuccess: () => {
+          downloadChannelArchive(channelId, channel?.name ?? 'channel')
+        },
+      })
     }
   }
 
@@ -216,9 +220,13 @@ export function ChannelSettingsModal({
                       ) : (
                         <Archive className="h-4 w-4" />
                       )}
-                      {channel?.is_archived
-                        ? 'Restore Channel'
-                        : 'Archive Channel'}
+                      {archiveChannel.isPending
+                        ? 'Archiving...'
+                        : unarchiveChannel.isPending
+                          ? 'Restoring...'
+                          : channel?.is_archived
+                            ? 'Restore Channel'
+                            : 'Archive Channel'}
                     </button>
                   </div>
                 </div>

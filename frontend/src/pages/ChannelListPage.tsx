@@ -8,7 +8,7 @@ import { MessageInput } from '../components/MessageInput'
 import { TypingIndicator } from '../components/TypingIndicator'
 import { useAuthStore } from '../stores/authStore'
 import { useChannelStore } from '../stores/channelStore'
-import { useChannel } from '../api/channels'
+import { useChannel, downloadChannelArchive } from '../api/channels'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { useCursorSync } from '../hooks/useCursorSync'
 import { SelectChannelPrompt } from '../components/EmptyState'
@@ -35,17 +35,53 @@ export function ChannelListPage() {
     }
   }, [channelId, navigate])
 
+  const { data: channel } = useChannel(channelId ?? null)
+  const user = useAuthStore((s) => s.user)
+  const isOwner = channel?.owner_id === user?.id
+  const [showSettings, setShowSettings] = useState(false)
+
   return (
     <div className="channel-page flex h-screen bg-zinc-950 text-zinc-100">
       <ChannelSidebarToggle />
       <main className="flex flex-1 flex-col min-w-0">
         {channelId ? (
-          <>
-            <ChannelHeader channelId={channelId} />
-            <MessageList channelId={channelId} />
-            <TypingIndicator channelId={channelId} />
-            <MessageInput channelId={channelId} />
-          </>
+          channel?.is_archived ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-4">
+              <div className="text-center">
+                <h2 className="text-xl font-semibold text-zinc-300 mb-2">
+                  # {channel?.name ?? channelId.slice(0, 8)}
+                  <span className="ml-2 text-sm text-zinc-500 font-normal">[Archived]</span>
+                </h2>
+                <p className="text-zinc-500 text-sm mb-6">This channel has been archived.</p>
+                <div className="flex gap-3 justify-center">
+                  <button onClick={() => channel && downloadChannelArchive(channelId, channel.name)}
+                    className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 transition-colors">
+                    Download Archive
+                  </button>
+                  <button onClick={() => navigate('/channels')}
+                    className="rounded-lg border border-zinc-700 px-4 py-2 text-sm text-zinc-400 hover:bg-zinc-800 transition-colors">
+                    Back to Channels
+                  </button>
+                </div>
+              </div>
+              {isOwner && (
+                <button onClick={() => setShowSettings(true)}
+                  className="absolute top-3 right-3 rounded-md p-1 text-zinc-500 hover:text-zinc-300 transition-colors">
+                  <Settings className="h-4 w-4" />
+                </button>
+              )}
+              {showSettings && isOwner && (
+                <ChannelSettingsModal channelId={channelId} isOpen={showSettings} onClose={() => setShowSettings(false)} />
+              )}
+            </div>
+          ) : (
+            <>
+              <ChannelHeader channelId={channelId} />
+              <MessageList channelId={channelId} />
+              <TypingIndicator channelId={channelId} />
+              <MessageInput channelId={channelId} />
+            </>
+          )
         ) : (
           <SelectChannelPrompt />
         )}

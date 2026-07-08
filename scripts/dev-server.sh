@@ -20,6 +20,21 @@ for arg in "$@"; do
     esac
 done
 
+# 0. 清理已有服务
+echo "🧹 检查已有服务..."
+for port in 3000 5173; do
+    if command -v fuser &>/dev/null; then
+        fuser -k ${port}/tcp 2>/dev/null && echo "   已终止端口 $port 上的旧进程" || true
+    elif command -v lsof &>/dev/null; then
+        pids=$(lsof -ti :$port 2>/dev/null) || true
+        if [ -n "$pids" ]; then
+            echo "$pids" | xargs kill 2>/dev/null && echo "   已终止端口 $port 上的旧进程" || true
+        fi
+    fi
+done
+sleep 0.5  # 给进程一点时间释放端口
+echo ""
+
 echo "╔══════════════════════════════════════════════╗"
 echo "║   VAST IM Server — 调试模式                    ║"
 echo "╚══════════════════════════════════════════════╝"
@@ -53,6 +68,8 @@ export JWT_SECRET="${JWT_SECRET:-dev-secret-change-me-in-production}"
 export INVITE_CODE="${INVITE_CODE:-IM2024}"
 export SERVER_PORT="${SERVER_PORT:-3000}"
 export TLS_MODE="${TLS_MODE:-none}"
+export ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
+export ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin123}"
 
 echo "🔧 环境变量:"
 echo "   RUST_LOG=$RUST_LOG"
@@ -60,6 +77,8 @@ echo "   JWT_SECRET=${JWT_SECRET:0:8}..."
 echo "   INVITE_CODE=$INVITE_CODE"
 echo "   SERVER_PORT=$SERVER_PORT"
 echo "   TLS_MODE=$TLS_MODE"
+echo "   ADMIN_USERNAME=$ADMIN_USERNAME"
+echo "   ADMIN_PASSWORD=***"
 echo ""
 
 # 3. 强制 Cargo 检测前端变化后重新链接

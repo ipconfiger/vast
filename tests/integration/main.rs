@@ -7,4 +7,5 @@ mod file_flow;
 mod message_flow;
 mod permission_flow;
 mod reactions_flow;
+mod push_subscription_test;
 mod ws_flow;

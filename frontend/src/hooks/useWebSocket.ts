@@ -2,14 +2,16 @@ import { createElement, useEffect, useState } from 'react'
 import { useAuthStore } from '../stores/authStore'
 import { usePresenceStore } from '../stores/presenceStore'
 import { useReactionStore } from '../stores/reactionStore'
+import { useChannelStore } from '../stores/channelStore'
 import { refreshAccessToken } from '../api/client'
 import { queryClient } from '../queryClient'
 import { toast, useToastStore } from '../stores/toastStore'
 import type { Reaction } from '../types'
 
-// Build WebSocket URL from the current page origin so it works in any
-// environment — dev (Vite proxy), production (same origin), or custom deployments.
-const WS_URL = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
+/** Lazy WS URL — not a module-level constant so tests importing the module don't crash in environments without `window`. */
+function wsUrl(): string {
+  return `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
+}
 const MAX_RETRIES = 5
 const BASE_DELAY = 1000
 
@@ -102,7 +104,7 @@ export class WebSocketManager {
     if (!this.token) return
     this.setStatus('connecting')
     this.ws?.close()
-    const ws = new WebSocket(`${WS_URL}?token=${this.token}`)
+    const ws = new WebSocket(`${wsUrl()}?token=${this.token}`)
     this.ws = ws
 
     ws.onopen = () => {
@@ -320,14 +322,72 @@ function useWsEventSync(manager: WebSocketManager): void {
           setTimeout(() => window.location.reload(), 1500)
         }
       }),
-      manager.subscribe('channel_archived', async (data) => {
+      manager.subscribe('channel_archived', (data) => {
         const ev = data as { channel_id: string }
         if (!ev || typeof ev.channel_id !== 'string') return
-        const store = (await import('../stores/channelStore')).useChannelStore.getState()
-        if (store.currentChannelId === ev.channel_id) {
-          store.setCurrentChannel(null)
-          window.history.replaceState(null, '', '/channels')
-          window.location.reload()
+        const archivedId = ev.channel_id
+        useChannelStore.getState().updateChannel(archivedId, { is_archived: true })
+        const currentId = useChannelStore.getState().currentChannelId
+        if (currentId === archivedId) {
+          useChannelStore.getState().setCurrentChannel(null)
+          window.location.href = '/channels'
+        }
+      }),
+      manager.subscribe('channel_unarchived', (data) => {
+        const ev = data as { channel_id: string }
+        if (!ev || typeof ev.channel_id !== 'string') return
+        useChannelStore.getState().updateChannel(ev.channel_id, { is_archived: false })
+      }),
+      manager.subscribe('new_msg', (data) => {
+        console.log('[Notif] new_msg received', data)
+        const ev = data as { channel_id: string; sender_id: string; preview?: string } | null
+        if (!ev || typeof ev.channel_id !== 'string' || typeof ev.sender_id !== 'string') return
+        if (typeof document !== 'undefined' && document.visibilityState !== 'hidden') {
+          console.log('[Notif] skipped - tab visible, visibilityState:', document.visibilityState)
+          return
+        }
+        if (typeof Notification !== 'undefined' && Notification.permission !== 'granted') return
+        const myId = useAuthStore.getState().user?.id
+        if (ev.sender_id === myId) return
+        try {
+          console.log('[Notif] showing notification for', ev.channel_id)
+          const n = new Notification('New message', {
+            body: ev.preview || '',
+            data: { url: `/channels/${ev.channel_id}` },
+          })
+          n.onclick = () => {
+            window.focus()
+            window.location.href = (n.data as { url?: string })?.url || `/channels/${ev.channel_id}`
+            n.close()
+          }
+        } catch {
+          // Notification constructor may throw if permission revoked mid-flight
+        }
+      }),
+      manager.subscribe('thread_reply', (data) => {
+        console.log('[Notif] thread_reply received', data)
+        const ev = data as { channel_id: string; sender_id: string; preview?: string } | null
+        if (!ev || typeof ev.channel_id !== 'string' || typeof ev.sender_id !== 'string') return
+        if (typeof document !== 'undefined' && document.visibilityState !== 'hidden') {
+          console.log('[Notif] skipped - tab visible, visibilityState:', document.visibilityState)
+          return
+        }
+        if (typeof Notification !== 'undefined' && Notification.permission !== 'granted') return
+        const myId = useAuthStore.getState().user?.id
+        if (ev.sender_id === myId) return
+        try {
+          console.log('[Notif] showing notification for', ev.channel_id)
+          const n = new Notification('New reply', {
+            body: ev.preview || '',
+            data: { url: `/channels/${ev.channel_id}` },
+          })
+          n.onclick = () => {
+            window.focus()
+            window.location.href = (n.data as { url?: string })?.url || `/channels/${ev.channel_id}`
+            n.close()
+          }
+        } catch {
+          // Notification constructor may throw if permission revoked mid-flight
         }
       }),
     ]

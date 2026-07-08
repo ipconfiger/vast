@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, cleanup } from '@testing-library/react'
+import { render, cleanup, fireEvent } from '@testing-library/react'
 import { createElement } from 'react'
 import type { Channel } from '../types'
 import type { DmChannel } from '../api/dm'
@@ -14,12 +14,69 @@ vi.mock('../stores/unreadStore', () => ({
 
 // DmItem reads current username from authStore; stub it so dmDisplayName is deterministic.
 vi.mock('../stores/authStore', () => ({
-  useAuthStore: vi.fn((selector: (s: { user: { username: string } | null }) => unknown) =>
-    selector({ user: { username: 'me' } }),
+  useAuthStore: vi.fn((selector: (s: { user: { username: string; id: string } | null }) => unknown) =>
+    selector({ user: { username: 'me', id: 'u-1' } }),
   ),
 }))
 
-import { ChannelItem, DmItem } from './ChannelSidebar'
+
+
+// Mutable test state for ChannelSidebar archived-section tests.
+let mockChannelStoreChannels: Channel[] = []
+const mockDownloadArchive = vi.fn()
+vi.mock('../stores/channelStore', () => ({
+  useChannelStore: vi.fn((selector: (s: { channels: Channel[]; setChannels: () => void; setCurrentChannel: () => void }) => unknown) =>
+    selector({
+      channels: mockChannelStoreChannels,
+      setChannels: vi.fn(),
+      setCurrentChannel: vi.fn(),
+    }),
+  ),
+}))
+
+vi.mock('../stores/presenceStore', () => ({
+  usePresenceStore: vi.fn((selector: (s: { onlineUsers: Set<string> }) => unknown) =>
+    selector({ onlineUsers: new Set() }),
+  ),
+}))
+
+vi.mock('../stores/userStore', () => ({
+  useUserStore: vi.fn((selector: (s: { getName: () => string }) => unknown) =>
+    selector({ getName: vi.fn() }),
+  ),
+}))
+
+vi.mock('../api/channels', () => ({
+  useChannels: () => ({ data: [], isLoading: false }),
+  useCreateChannel: () => ({ mutate: vi.fn(), isPending: false }),
+  downloadChannelArchive: (...args: unknown[]) => mockDownloadArchive(...args),
+}))
+
+vi.mock('../api/dm', () => ({
+  useDms: () => ({ data: [] }),
+}))
+
+vi.mock('../hooks/useAuthImage', () => ({
+  useAuthImage: () => null,
+}))
+
+vi.mock('./Skeletons', () => ({
+  ChannelListSkeleton: () => null,
+}))
+
+vi.mock('./EmptyState', () => ({
+  NoChannelsEmpty: () => null,
+}))
+
+vi.mock('./CreateChannelDialog', () => ({
+  CreateChannelDialog: () => null,
+}))
+
+vi.mock('./DiscoverChannelsModal', () => ({
+  DiscoverChannelsModal: () => null,
+}))
+
+import { ChannelItem, DmItem, ChannelSidebar } from './ChannelSidebar'
 
 function makeChannel(overrides: Partial<Channel> = {}): Channel {
   return {
@@ -140,5 +197,60 @@ describe('DmItem unread badge', () => {
     )
     expect(queryByText(/^\d+$/)).toBeNull()
     expect(container.querySelector('.bg-red-500')).toBeNull()
+  })
+})
+
+describe('ChannelSidebar archived section', () => {
+  beforeEach(() => {
+    mockChannelStoreChannels = []
+    mockDownloadArchive.mockReset()
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.clearAllMocks()
+  })
+
+  it('renders archived channels in separate section with badge', () => {
+    mockChannelStoreChannels = [
+      makeChannel({ id: 'ch-1', name: 'general', is_archived: false }),
+      makeChannel({ id: 'ch-2', name: 'old-project', is_archived: true }),
+      makeChannel({ id: 'ch-3', name: 'archived-chat', is_archived: true }),
+    ]
+    const { getByText, queryAllByText } = render(createElement(ChannelSidebar))
+    expect(getByText('Archived')).toBeTruthy()
+    expect(getByText('old-project')).toBeTruthy()
+    expect(getByText('archived-chat')).toBeTruthy()
+    // Each archived channel has an "Archived" badge
+    expect(queryAllByText('Archived').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('does not render archived section when no archived channels', () => {
+    mockChannelStoreChannels = [
+      makeChannel({ id: 'ch-1', name: 'general', is_archived: false }),
+    ]
+    const { queryByText } = render(createElement(ChannelSidebar))
+    expect(queryByText('Archived')).toBeNull()
+  })
+
+  it('displays Archive icon next to each archived channel', () => {
+    mockChannelStoreChannels = [
+      makeChannel({ id: 'ch-1', name: 'general', is_archived: false }),
+      makeChannel({ id: 'ch-2', name: 'old-project', is_archived: true }),
+    ]
+    const { container } = render(createElement(ChannelSidebar))
+    // Archive icon is rendered via lucide-react Archive component
+    const archiveSection = container.querySelector('.border-t')
+    expect(archiveSection?.querySelector('svg')).toBeTruthy()
+  })
+
+  it('clicking archived channel calls downloadChannelArchive', () => {
+    mockChannelStoreChannels = [
+      makeChannel({ id: 'ch-1', name: 'general', is_archived: false }),
+      makeChannel({ id: 'ch-archived', name: 'old-project', is_archived: true }),
+    ]
+    const { getByText } = render(createElement(ChannelSidebar))
+    fireEvent.click(getByText('old-project'))
+    expect(mockDownloadArchive).toHaveBeenCalledWith('ch-archived', 'old-project')
   })
 })

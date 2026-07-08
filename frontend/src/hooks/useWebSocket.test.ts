@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { cleanup, renderHook } from '@testing-library/react'
 import { useWebSocket, getWsManager } from './useWebSocket'
 import { useAuthStore } from '../stores/authStore'
+import { useChannelStore } from '../stores/channelStore'
 import { useToastStore } from '../stores/toastStore'
 import { queryClient } from '../queryClient'
 import type { User } from '../types'
@@ -147,5 +148,69 @@ describe('useWebSocket — member_added dedup + toastStore routing', () => {
     // Then
     expect(useToastStore.getState().toasts).toHaveLength(0)
     expect(qc.refetchQueries).not.toHaveBeenCalled()
+  })
+})
+
+describe('useWebSocket — channel_archived / channel_unarchived', () => {
+  let originalWebSocket: typeof WebSocket
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    originalWebSocket = globalThis.WebSocket
+    ;(globalThis as unknown as { WebSocket: unknown }).WebSocket = FakeWebSocketImpl
+    captured.length = 0
+    useAuthStore.setState({
+      token: 'tok',
+      refreshToken: 'rtok',
+      tokenExpiry: null,
+      user: ME,
+      isAuthenticated: true,
+    })
+    useChannelStore.setState({
+      channels: [
+        { id: 'ch-1', name: 'general', is_archived: false, created_at: '' },
+        { id: 'ch-2', name: 'archive-me', is_archived: false, created_at: '' },
+      ] as any,
+      currentChannelId: null,
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    getWsManager().disconnect()
+    ;(globalThis as unknown as { WebSocket: unknown }).WebSocket = originalWebSocket
+    vi.useRealTimers()
+  })
+
+  it('Given an authenticated WS connection, When channel_archived is received, Then updateChannel is called with is_archived: true', () => {
+    renderHook(() => useWebSocket())
+    openLastWs()
+    const spy = vi.spyOn(useChannelStore.getState(), 'updateChannel')
+    emitServerEvent('channel_archived', { channel_id: 'ch-2' })
+    expect(spy).toHaveBeenCalledWith('ch-2', { is_archived: true })
+  })
+
+  it('Given currentChannelId matches the archived channel, When channel_archived is received, Then setCurrentChannel(null) and redirect to /channels', () => {
+    useChannelStore.setState({ currentChannelId: 'ch-2' })
+    renderHook(() => useWebSocket())
+    openLastWs()
+    emitServerEvent('channel_archived', { channel_id: 'ch-2' })
+    expect(useChannelStore.getState().currentChannelId).toBeNull()
+  })
+
+  it('Given an authenticated WS connection, When channel_unarchived is received, Then updateChannel is called with is_archived: false', () => {
+    renderHook(() => useWebSocket())
+    openLastWs()
+    const spy = vi.spyOn(useChannelStore.getState(), 'updateChannel')
+    emitServerEvent('channel_unarchived', { channel_id: 'ch-1' })
+    expect(spy).toHaveBeenCalledWith('ch-1', { is_archived: false })
+  })
+
+  it('Given an invalid channel_id in the message, When handler fires, Then no store mutation occurs', () => {
+    renderHook(() => useWebSocket())
+    openLastWs()
+    const spy = vi.spyOn(useChannelStore.getState(), 'updateChannel')
+    emitServerEvent('channel_archived', { channel_id: null })
+    expect(spy).not.toHaveBeenCalled()
   })
 })

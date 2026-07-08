@@ -12,11 +12,14 @@ interface UploadResponse {
 
 export type { UploadResponse }
 
-export function useUploadFile() {
+export function useUploadFile(channelId?: string) {
   return useMutation({
     mutationFn: async (file: File): Promise<UploadResponse> => {
       const formData = new FormData()
       formData.append('file', file)
+      if (channelId) {
+        formData.append('channel_id', channelId)
+      }
       // apiClient injects the Bearer token, prepends API_BASE, and throws
       // ApiClientError on non-2xx (it does the res.ok check internally).
       // FormData bodies skip the json Content-Type so the browser can set

@@ -5,7 +5,21 @@ import { useUploadFile } from '../api/files'
 import { useAuthStore } from '../stores/authStore'
 import { toast } from '../stores/toastStore'
 import { useNavigate } from 'react-router'
-import { ArrowLeft, Save, CheckCircle, Camera } from 'lucide-react'
+import { ArrowLeft, Save, CheckCircle, Camera, Bell, BellOff, Info } from 'lucide-react'
+
+type NotifStatus = 'loading' | 'unsupported' | 'denied' | 'subscribed' | 'unsubscribed' | 'subscribing' | 'unsubscribing'
+
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4)
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
+  const rawData = window.atob(base64)
+  const buffer = new ArrayBuffer(rawData.length)
+  const view = new Uint8Array(buffer)
+  for (let i = 0; i < rawData.length; i++) {
+    view[i] = rawData.charCodeAt(i)
+  }
+  return view
+}
 
 export default function ProfilePage() {
   const user = useAuthStore((s) => s.user)
@@ -14,9 +28,11 @@ export default function ProfilePage() {
   const [displayName, setDisplayName] = useState('')
   const [fetched, setFetched] = useState(false)
   const [saved, setSaved] = useState(false)
-const [uploading, setUploading] = useState(false)
-const [avatarSrc, setAvatarSrc] = useState<string | null>(null)
-  const uploadMutation = useUploadFile()
+	const [uploading, setUploading] = useState(false)
+	const [avatarSrc, setAvatarSrc] = useState<string | null>(null)
+	  const uploadMutation = useUploadFile()
+	const [notifStatus, setNotifStatus] = useState<NotifStatus>('loading')
+	const [notifError, setNotifError] = useState<string | null>(null)
 
   const saveMutation = useMutation({
     mutationFn: (display_name: string) =>
@@ -61,7 +77,113 @@ const [avatarSrc, setAvatarSrc] = useState<string | null>(null)
       if (objectUrl) URL.revokeObjectURL(objectUrl)
       controller.abort()
     }
-  }, [user?.avatar_url])
+	  }, [user?.avatar_url])
+
+	  useEffect(() => {
+	    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+	      setNotifStatus('unsupported')
+	      return
+	    }
+	    // Show the button immediately — don't block the UI on getSubscription()
+	    // which can hang indefinitely on Chrome (blocked FCM connection).
+	    // Check subscription in background without awaiting.
+	    setNotifStatus('unsubscribed')
+	    if (navigator.serviceWorker.controller) {
+	      navigator.serviceWorker.ready
+	        .then(reg => reg.pushManager.getSubscription())
+	        .then(sub => {
+	          // Only update if user hasn't interacted yet
+	          if (sub) setNotifStatus('subscribed')
+	        })
+	        .catch(() => {})
+	    }
+	  }, [])
+
+	  async function handleEnableNotifications() {
+	    setNotifStatus('subscribing')
+	    setNotifError(null)
+
+	    try {
+	      if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+	        setNotifStatus('unsupported')
+	        return
+	      }
+
+	      if (!navigator.serviceWorker.controller) {
+	        await navigator.serviceWorker.register('/sw.js')
+	        await navigator.serviceWorker.ready
+	      }
+
+	      const permission = await Notification.requestPermission()
+	      if (permission === 'denied') {
+	        setNotifStatus('denied')
+	        return
+	      }
+	      if (permission !== 'granted') {
+	        setNotifStatus('unsubscribed')
+	        return
+	      }
+
+	      const vapidData = await apiClient<{ public_key: string }>('/push/vapid-public-key')
+	      const registration = await navigator.serviceWorker.ready
+	      // pushManager.subscribe() can hang indefinitely if FCM is blocked
+	      // (Chrome/Edge use Google FCM; Firefox uses Mozilla autopush).
+	      const subscription = await Promise.race([
+	        registration.pushManager.subscribe({
+	          userVisibleOnly: true,
+	          applicationServerKey: urlBase64ToUint8Array(vapidData.public_key) as unknown as BufferSource,
+	        }),
+	        new Promise<never>((_, reject) =>
+	          setTimeout(() => reject(new Error('Timed out waiting for push service (Google FCM may be blocked). Try Firefox.')), 15000)
+	        ),
+	      ])
+
+	      const subJson = subscription.toJSON()
+	      await apiClient('/push/subscribe', {
+	        method: 'POST',
+	        body: JSON.stringify({
+	          endpoint: subJson.endpoint,
+	          p256dh: subJson.keys?.p256dh,
+	          auth: subJson.keys?.auth,
+	        }),
+	      })
+
+	      setNotifStatus('subscribed')
+	      toast.success('Browser notifications enabled')
+	    } catch (err) {
+	      const message = err instanceof Error ? err.message : 'Failed to enable notifications'
+	      setNotifError(message)
+	      setNotifStatus('unsubscribed')
+	      toast.error(message.includes('FCM') || message.includes('Timed out')
+	        ? 'Push service unavailable. Try Firefox, or check your network.'
+	        : 'Failed to enable notifications')
+	    }
+	  }
+
+	  async function handleDisableNotifications() {
+	    setNotifStatus('unsubscribing')
+	    setNotifError(null)
+
+	    try {
+	      const registration = await navigator.serviceWorker.ready
+	      const subscription = await registration.pushManager.getSubscription()
+
+	      if (subscription) {
+	        await subscription.unsubscribe()
+	        await apiClient(`/push/unsubscribe?endpoint=${encodeURIComponent(subscription.endpoint)}`, {
+	          method: 'DELETE',
+	        })
+	      }
+
+	      setNotifStatus('unsubscribed')
+	      toast.success('Browser notifications disabled')
+	    } catch (err) {
+	      const message = err instanceof Error ? err.message : 'Failed to disable notifications'
+	      setNotifError(message)
+	      setNotifStatus('subscribed')
+	      toast.error('Failed to disable notifications')
+	    }
+	  }
 
   if (!fetched) {
     return <div className="min-h-screen bg-slate-950 flex items-center justify-center"><div className="animate-spin h-6 w-6 border-2 border-indigo-500 border-t-transparent rounded-full" /></div>
@@ -153,6 +275,58 @@ const [avatarSrc, setAvatarSrc] = useState<string | null>(null)
               </div>
             )}
           </div>
+        </div>
+        <div className="bg-slate-900 rounded-2xl border border-slate-800 p-6 mt-4">
+          <h2 className="text-xl font-bold text-white mb-4">Notifications</h2>
+          {notifStatus === 'loading' && (
+            <div className="flex items-center gap-2 text-sm text-zinc-400">
+              <div className="animate-spin h-4 w-4 border-2 border-indigo-500 border-t-transparent rounded-full" />
+              Checking notification status...
+            </div>
+          )}
+          {notifStatus === 'unsupported' && (
+            <div className="flex items-start gap-2 text-sm text-zinc-400 bg-slate-800/50 rounded-lg px-3 py-3">
+              <Info className="h-4 w-4 mt-0.5 shrink-0 text-zinc-500" />
+              <span>Browser notifications are not supported in this browser.</span>
+            </div>
+          )}
+          {notifStatus === 'denied' && (
+            <div className="flex items-start gap-2 text-sm text-zinc-400 bg-slate-800/50 rounded-lg px-3 py-3">
+              <Info className="h-4 w-4 mt-0.5 shrink-0 text-amber-400" />
+              <span>Notification permission was denied. Enable notifications in your browser settings to receive push notifications.</span>
+            </div>
+          )}
+          {(notifStatus === 'unsubscribed' || notifStatus === 'subscribing') && (
+            <button
+              onClick={handleEnableNotifications}
+              disabled={notifStatus === 'subscribing'}
+              className="w-full py-2 px-4 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg flex items-center justify-center gap-2"
+            >
+              {notifStatus === 'subscribing' ? (
+                <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+              ) : (
+                <Bell className="h-4 w-4" />
+              )}
+              {notifStatus === 'subscribing' ? 'Enabling...' : 'Enable Browser Notifications'}
+            </button>
+          )}
+          {(notifStatus === 'subscribed' || notifStatus === 'unsubscribing') && (
+            <button
+              onClick={handleDisableNotifications}
+              disabled={notifStatus === 'unsubscribing'}
+              className="w-full py-2 px-4 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white rounded-lg flex items-center justify-center gap-2"
+            >
+              {notifStatus === 'unsubscribing' ? (
+                <div className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
+              ) : (
+                <BellOff className="h-4 w-4" />
+              )}
+              {notifStatus === 'unsubscribing' ? 'Disabling...' : 'Disable Notifications'}
+            </button>
+          )}
+          {notifError && (
+            <p className="text-xs text-red-400 mt-2">{notifError}</p>
+          )}
         </div>
       </div>
     </div>

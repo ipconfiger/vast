@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router'
-import { Plus, Hash, Lock, Users, Loader2, Menu, X, Globe, FolderOpen } from 'lucide-react'
-import { useChannels, useCreateChannel } from '../api/channels'
+import { Plus, Hash, Lock, Users, Loader2, Menu, X, Globe, FolderOpen, Archive } from 'lucide-react'
+import { useChannels, useCreateChannel, downloadChannelArchive } from '../api/channels'
 import { useDms } from '../api/dm'
 import { useChannelStore } from '../stores/channelStore'
 import { usePresenceStore } from '../stores/presenceStore'
@@ -138,6 +138,9 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
     })
   }
 
+  const activeChannels = channels.filter(c => !c.is_archived)
+  const archivedChannels = channels.filter(c => c.is_archived)
+
   return (
     <aside className="channel-sidebar flex h-full w-[300px] flex-shrink-0 flex-col border-r border-zinc-800 bg-zinc-950">
       <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
@@ -180,15 +183,40 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
           <NoChannelsEmpty onBrowse={() => setIsDiscoverOpen(true)} />
         ) : (
           <div className="flex flex-col gap-0.5">
-            {channels.filter(c => c.owner_id === currentUserId).map(c => (
+            {activeChannels.filter(c => c.owner_id === currentUserId).map(c => (
               <ChannelItem key={c.id} channel={c} isActive={c.id === channelId} onClick={() => handleChannelClick(c)} />
             ))}
-            {channels.filter(c => c.owner_id !== currentUserId).length > 0 && (
+            {activeChannels.filter(c => c.owner_id !== currentUserId).length > 0 && (
               <h3 className="px-3 pt-3 pb-1 text-xs font-semibold text-zinc-500 uppercase tracking-wider">Joined</h3>
             )}
-            {channels.filter(c => c.owner_id !== currentUserId).map(c => (
+            {activeChannels.filter(c => c.owner_id !== currentUserId).map(c => (
               <ChannelItem key={c.id} channel={c} isActive={c.id === channelId} onClick={() => handleChannelClick(c)} />
             ))}
+          </div>
+        )}
+
+        {archivedChannels.length > 0 && (
+          <div className="mt-4 border-t border-zinc-800 pt-3">
+            <h3 className="px-3 pb-2 text-xs font-semibold text-zinc-500 uppercase tracking-wider">
+              Archived
+            </h3>
+            <div className="flex flex-col gap-0.5">
+              {archivedChannels.map(c => (
+                <button
+                  key={c.id}
+                  onClick={() => downloadChannelArchive(c.id, c.name).catch(() => {
+                    // silently ignore download failures
+                  })}
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-sm text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 transition-colors"
+                >
+                  <Archive className="h-4 w-4 flex-shrink-0" />
+                  <span className="truncate">{c.name}</span>
+                  <span className="ml-auto shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-medium text-zinc-500">
+                    Archived
+                  </span>
+                </button>
+              ))}
+            </div>
           </div>
         )}
 

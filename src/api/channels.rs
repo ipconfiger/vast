@@ -585,6 +585,7 @@ fn dedup_filename(original_name: &str, counts: &mut HashMap<String, usize>) -> S
 // ---- private FromRow structs ----
 
 #[derive(Debug, FromRow)]
+#[allow(dead_code)]
 struct ArchiveMessageRow {
     id: i64,
     msg_id: String,
@@ -603,6 +604,7 @@ struct ArchiveMessageRow {
 }
 
 #[derive(Debug, FromRow)]
+#[allow(dead_code)]
 struct ArchiveFileRow {
     id: String,
     uploader_id: Option<String>,

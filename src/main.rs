@@ -1,5 +1,5 @@
 use im_server::{
-    build_app, AppConfig, AppState, TlsMode,
+    build_app, push, AppConfig, AppState, TlsMode,
 };
 use axum::{
     http::Uri,
@@ -37,6 +37,12 @@ async fn main() {
 
     let db_path = config.data_dir.join("im.db");
     let pool = im_server::db::init_pool(&db_path).await;
+
+    // Initialize VAPID keys for Web Push notifications
+    push::init_vapid_keys(&pool)
+        .await
+        .expect("Failed to initialize VAPID keys");
+
     let pool_for_shutdown = pool.clone();
 
     let ws_pool = Arc::new(im_server::ws::ConnectionPool::new());

@@ -25,7 +25,7 @@ export function MessageInput({ channelId }: MessageInputProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const sendMessage = useSendMessage(channelId)
-  const uploadFile = useUploadFile()
+  const uploadFile = useUploadFile(channelId)
 
   useEffect(() => {
     if (textareaRef.current) {

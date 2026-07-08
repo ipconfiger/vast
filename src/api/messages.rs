@@ -444,6 +444,7 @@ pub async fn send_message(
     .await?;
 
     let preview = extract_preview(&body.payload);
+    let push_preview = preview.clone();
     if let Some(parent_id) = body.thread_parent_id {
         state.ws_pool.notify_channel(
             &channel_id,
@@ -466,6 +467,20 @@ pub async fn send_message(
                 preview,
             },
         );
+    }
+
+    {
+        let pool = state.pool.clone();
+        let ws_pool = Arc::clone(&state.ws_pool);
+        let channel_id = channel_id.clone();
+        let sender_id = user_id.clone();
+        let preview = push_preview.clone();
+        tokio::spawn(async move {
+            crate::push::sender::dispatch_push_for_message(
+                pool, ws_pool, channel_id, sender_id, preview,
+            )
+            .await;
+        });
     }
 
     spawn_bot_mentions(&state, &channel_id, &body.payload).await;

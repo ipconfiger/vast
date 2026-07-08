@@ -198,6 +198,12 @@ impl ConnectionPool {
         let cutoff = Instant::now() - Duration::from_secs(5);
         self.typing_timeouts.retain(|_, last_seen| *last_seen > cutoff);
     }
+
+    pub fn is_user_online(&self, user_id: &str) -> bool {
+        self.user_connections
+            .get(user_id)
+            .is_some_and(|entry| !entry.is_empty())
+    }
 }
 
 // ---------------------------------------------------------------------------
