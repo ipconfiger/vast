@@ -54,6 +54,12 @@ vi.mock('../api/channels', () => ({
 
 vi.mock('../api/dm', () => ({
   useDms: () => ({ data: [] }),
+  useCloseDm: () => ({ mutate: vi.fn() }),
+}))
+
+vi.mock('react-router', () => ({
+  useNavigate: () => vi.fn(),
+  useParams: () => ({ channelId: 'ch-1' }),
 }))
 
 vi.mock('../hooks/useAuthImage', () => ({
@@ -204,6 +210,7 @@ describe('ChannelSidebar archived section', () => {
   beforeEach(() => {
     mockChannelStoreChannels = []
     mockDownloadArchive.mockReset()
+    mockDownloadArchive.mockResolvedValue(undefined)
   })
 
   afterEach(() => {
@@ -217,8 +224,8 @@ describe('ChannelSidebar archived section', () => {
       makeChannel({ id: 'ch-2', name: 'old-project', is_archived: true }),
       makeChannel({ id: 'ch-3', name: 'archived-chat', is_archived: true }),
     ]
-    const { getByText, queryAllByText } = render(createElement(ChannelSidebar))
-    expect(getByText('Archived')).toBeTruthy()
+    const { getByText, getAllByText, queryAllByText } = render(createElement(ChannelSidebar))
+    expect(getAllByText('Archived').length).toBeGreaterThanOrEqual(1)
     expect(getByText('old-project')).toBeTruthy()
     expect(getByText('archived-chat')).toBeTruthy()
     // Each archived channel has an "Archived" badge

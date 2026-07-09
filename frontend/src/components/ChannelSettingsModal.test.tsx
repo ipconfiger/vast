@@ -224,7 +224,7 @@ describe('ChannelSettingsModal', () => {
       clickDangerZone()
       fireEvent.click(screen.getAllByText('Restore Channel').pop()!)
       expect(unarchiveMutateMock).toHaveBeenCalledTimes(1)
-      expect(unarchiveMutateMock).toHaveBeenCalledWith('ch-1')
+      expect(unarchiveMutateMock).toHaveBeenCalledWith('ch-1', expect.any(Object))
     })
 
     it('triggers downloadChannelArchive after archive succeeds', async () => {
