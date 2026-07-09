@@ -265,9 +265,10 @@ async fn unsubscribe_removes_correct_subscription() {
     assert_eq!(count_b, 1, "User B's subscription should be untouched");
 }
 
-/// DELETE /push/unsubscribe → 404 when the endpoint is not found
+/// DELETE /push/unsubscribe is idempotent — calling it with a nonexistent
+/// endpoint returns 200 OK (no-op).
 #[tokio::test]
-async fn unsubscribe_nonexistent_returns_404() {
+async fn unsubscribe_nonexistent_returns_ok() {
     ensure_env();
     let pool = setup_pool().await;
     let mut app = build_app(make_state(pool));
@@ -281,7 +282,7 @@ async fn unsubscribe_nonexistent_returns_404() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::NOT_FOUND, "Expected 404 for nonexistent: {body}");
+    assert_eq!(status, StatusCode::OK, "Expected 200 OK (idempotent) for nonexistent: {body}");
 }
 
 /// POST /push/resubscribe updates endpoint+p256dh+auth WITHOUT auth, and
@@ -353,9 +354,10 @@ async fn resubscribe_updates_endpoint_without_auth() {
     assert_eq!(row.2, new_auth);
 }
 
-/// POST /push/resubscribe with an unknown old_endpoint → 404
+/// POST /push/resubscribe is idempotent — calling it with an unknown
+/// old_endpoint returns 200 OK (no-op).
 #[tokio::test]
-async fn resubscribe_nonexistent_returns_404() {
+async fn resubscribe_nonexistent_returns_ok() {
     ensure_env();
     let pool = setup_pool().await;
     let mut app = build_app(make_state(pool));
@@ -373,7 +375,7 @@ async fn resubscribe_nonexistent_returns_404() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::NOT_FOUND, "Expected 404 for unknown old_endpoint: {body}");
+    assert_eq!(status, StatusCode::OK, "Expected 200 OK (idempotent) for unknown old_endpoint: {body}");
 }
 
 /// Subscribe is idempotent — calling it twice with the same endpoint does
