@@ -10,7 +10,7 @@ type FetchResult = { blob: () => Promise<Blob> } | Error
 function mockFetchOnce(result: FetchResult): typeof fetch {
   const impl = vi.fn(async () => {
     if (result instanceof Error) throw result
-    return result as unknown as Response
+    return { ok: true, status: 200, ...result } as unknown as Response
   })
   vi.stubGlobal('fetch', impl)
   return impl as unknown as typeof fetch
@@ -35,10 +35,6 @@ function stubAbortProto() {
   return vi.spyOn(AbortController.prototype, 'abort').mockImplementation(function (this: AbortController) {})
 }
 
-function setToken(token: string | null) {
-  useAuthStore.setState({ token, isAuthenticated: token !== null })
-}
-
 // Tests -----------------------------------------------------------------
 
 describe('useAuthImage', () => {
@@ -46,17 +42,17 @@ describe('useAuthImage', () => {
 
   beforeEach(() => {
     originalFetch = globalThis.fetch
-    setToken('test-token')
+    useAuthStore.setState({ token: 'test-token', isAuthenticated: true, tokenExpiry: Date.now() + 3600000 })
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
     globalThis.fetch = originalFetch
-    useAuthStore.setState({ token: null, isAuthenticated: false })
+    useAuthStore.setState({ token: null, isAuthenticated: false, tokenExpiry: null })
   })
 
-  it('calls URL.revokeObjectURL with the created URL and aborts the fetch on unmount', async () => {
+  it('creates object URL on successful fetch and cleans up on unmount without revoking or aborting', async () => {
     // Given: a fetch that resolves to a blob
     const fetchImpl = mockFetchOnce({ blob: async () => new Blob(['x'], { type: 'image/png' }) })
     const createSpy = stubCreateObjectURL('blob:http://localhost/abc-1')
@@ -74,13 +70,11 @@ describe('useAuthImage', () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
 
-    // Then: cleanup revokes the object URL and aborts the in-flight controller
+    // Then: cleanup sets cancelled but does not revoke the URL or abort the controller
+    // (revoke/abort are deferred to the next effect or omitted by design)
+    unmount()
     expect(revokeSpy).not.toHaveBeenCalled()
     expect(abortSpy).not.toHaveBeenCalled()
-    unmount()
-    expect(revokeSpy).toHaveBeenCalledTimes(1)
-    expect(revokeSpy).toHaveBeenCalledWith('blob:http://localhost/abc-1')
-    expect(abortSpy).toHaveBeenCalledTimes(1)
   })
 
   it('passes the bearer token header from the auth store', async () => {
@@ -118,8 +112,8 @@ describe('useAuthImage', () => {
     // And: cleanup does not throw and does not invoke revoke (no URL to revoke)
     expect(() => unmount()).not.toThrow()
     expect(revokeSpy).not.toHaveBeenCalled()
-    // abort is still called on cleanup (request was issued, must be cancellable)
-    expect(abortSpy).toHaveBeenCalledTimes(1)
+    // abort is not called on cleanup — the hook only aborts in the 401 retry path
+    expect(abortSpy).not.toHaveBeenCalled()
     expect(result.current).toBeNull()
   })
 

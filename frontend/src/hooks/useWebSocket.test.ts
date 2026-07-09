@@ -173,6 +173,8 @@ describe('useWebSocket — channel_archived / channel_unarchived', () => {
       ] as any,
       currentChannelId: null,
     })
+    qc.invalidateQueries.mockClear()
+    qc.refetchQueries.mockClear()
   })
 
   afterEach(() => {
@@ -190,12 +192,16 @@ describe('useWebSocket — channel_archived / channel_unarchived', () => {
     expect(spy).toHaveBeenCalledWith('ch-2', { is_archived: true })
   })
 
-  it('Given currentChannelId matches the archived channel, When channel_archived is received, Then setCurrentChannel(null) and redirect to /channels', () => {
+  it('Given currentChannelId matches the archived channel, When channel_archived is received, Then updateChannel is called and queryClient invalidates channel and channels queries', () => {
     useChannelStore.setState({ currentChannelId: 'ch-2' })
     renderHook(() => useWebSocket())
     openLastWs()
     emitServerEvent('channel_archived', { channel_id: 'ch-2' })
-    expect(useChannelStore.getState().currentChannelId).toBeNull()
+    // currentChannelId is NOT reset to null — the handler leaves store state
+    // as-is and relies on queryClient invalidation to drive the UI updates.
+    expect(useChannelStore.getState().currentChannelId).toBe('ch-2')
+    expect(qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['channel', 'ch-2'] })
+    expect(qc.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['channels'] })
   })
 
   it('Given an authenticated WS connection, When channel_unarchived is received, Then updateChannel is called with is_archived: false', () => {

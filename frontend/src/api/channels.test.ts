@@ -4,7 +4,7 @@ import { downloadChannelArchive } from './channels'
 // Mock useAuthStore
 vi.mock('../stores/authStore', () => ({
   useAuthStore: {
-    getState: () => ({ token: 'test-token' }),
+    getState: () => ({ token: 'test-token', isTokenExpired: () => false }),
   },
 }))
 
@@ -38,9 +38,10 @@ describe('downloadChannelArchive', () => {
     const createElSpy = vi.spyOn(document, 'createElement')
     await downloadChannelArchive('ch-1', 'report/final:2026')
 
-    createElSpy.mock.results.find(r =>
+    const anchor = createElSpy.mock.results.find(r =>
       r.value instanceof HTMLAnchorElement
     )?.value as HTMLAnchorElement | undefined
+    expect(anchor?.download).toBe('report_final_2026-archive.zip')
   })
 
   it('throws on non-ok response', async () => {

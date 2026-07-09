@@ -61,7 +61,7 @@ function resetStores() {
   useAuthStore.setState({
     token: 'test-token',
     refreshToken: null,
-    tokenExpiry: null,
+    tokenExpiry: Date.now() + 3600_000, // 1 hour in the future, so isTokenExpired() returns false
     user: { id: 'u1', username: 'alice', display_name: 'Alice', avatar_url: '', created_at: '' },
     isAuthenticated: true,
   })
