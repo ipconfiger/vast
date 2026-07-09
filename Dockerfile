@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-#
 # VAST — multi-stage Dockerfile
 #   Stage 1: build the React/TS frontend with Bun/Vite  -> frontend/dist
 #   Stage 2: compile the Rust backend (frontend embedded at compile time)
@@ -47,6 +45,7 @@ COPY Cargo.toml Cargo.lock ./
 # across builds, making incremental rebuilds fast. Requires DOCKER_BUILDKIT=1
 # (default on modern Docker / `docker buildx`).
 COPY src ./src
+COPY db ./db
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
