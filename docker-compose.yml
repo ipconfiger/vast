@@ -1,0 +1,71 @@
+# =============================================================================
+# VAST — example docker-compose deployment
+#
+#   Quick start:
+#     1. Edit JWT_SECRET below (or `openssl rand -base64 48`).
+#     2. (Optional) Set ADMIN_PASSWORD to enable the admin console.
+#     3. `docker compose up -d`
+#     4. Open http://<host>:3000   health: GET /api/health
+#
+#   All environment variables are listed below with their defaults. Override
+#   any of them by editing this file or by creating a `.env.docker` file
+#   (see .env.docker.example) and uncommenting `env_file`.
+# =============================================================================
+services:
+  im-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # To use a prebuilt image instead of building, comment out `build:` above
+    # and uncomment the next line:
+    # image: vast/im-server:latest
+    container_name: vast
+    restart: unless-stopped
+
+    ports:
+      - "3000:3000"   # HTTP (also serves the HTTP->HTTPS redirect when TLS_MODE != none)
+      - "3443:3443"   # HTTPS (only used when TLS_MODE=self-signed|lets-encrypt)
+
+    environment:
+      # ----- IMPORTANT: change before production use -----------------------
+      # JWT signing secret. NEVER leave the placeholder in prod. Generate with:
+      #   openssl rand -base64 48
+      JWT_SECRET: "change-me-please-run-openssl-rand-base64-48"
+      # Admin console credentials. Leave ADMIN_PASSWORD empty to DISABLE the
+      # admin backend entirely (recommended if you don't use it).
+      ADMIN_USERNAME: "admin"
+      ADMIN_PASSWORD: ""
+      # ---------------------------------------------------------------------
+
+      # ----- Optional (sensible defaults below) ----------------------------
+      INVITE_CODE: "IM2024"                  # registration invite code
+      TLS_MODE: "none"                       # none | self-signed | lets-encrypt
+      # NOTE: the binary currently binds 3000 regardless of SERVER_PORT; the
+      # variable is kept here for completeness/documentation.
+      SERVER_PORT: "3000"
+      UPLOAD_MAX_SIZE: "52428800"            # 50 MiB, max upload size in bytes
+      RUST_LOG: "info"                       # trace|debug|info|warn|error
+      DATABASE_URL: "sqlite:vast.db"         # informational; DB lives at /app/data/im.db
+      VAPID_SUBJECT: "mailto:push@vast.local" # Web Push VAPID subject
+      # VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY: auto-generated at first run and
+      # stored in the data volume; only set them if you need stable keys.
+
+    # Put secrets in .env.docker instead of `environment:` if you prefer.
+    # (Compose >= 2.24 supports `required: false` so the file is optional.)
+    env_file:
+      - path: .env.docker
+        required: false
+
+    volumes:
+      # Persistent storage: SQLite database + uploaded files. DO NOT remove.
+      - ./data:/app/data
+      # TLS certificates. Only required when TLS_MODE != none; otherwise this
+      # mount is harmless (an empty dir).
+      - ./certs:/app/certs
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
