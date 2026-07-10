@@ -88,7 +88,7 @@ export function ChannelListPage() {
               <ChannelHeader channelId={channelId} />
               <MessageList channelId={channelId} />
               <TypingIndicator channelId={channelId} />
-              <MessageInput channelId={channelId} />
+              <MessageInput channelId={channelId} currentRole={channel?.role} />
             </>
           )
         ) : (

@@ -5,25 +5,37 @@ import { useUploadFile } from '../api/files'
 import { CodeSnippetInput } from './CodeSnippetInput'
 import { VoteBuilderModal } from './VoteBuilderModal'
 
+type CmdRole = 'owner' | 'admin' | 'member'
+
 const COMMANDS = [
-  { cmd: 'quit', desc: 'Delete channel (owner)', args: false },
-  { cmd: 'list', desc: 'List members (owner/admin)', args: false },
-  { cmd: 'kick', desc: 'Kick a member (owner/admin)', args: true, argHint: '<username>' },
+  { cmd: 'quit', desc: 'Delete channel', args: false, requiredRole: 'owner' as CmdRole },
+  { cmd: 'list', desc: 'List members', args: false, requiredRole: 'owner' as CmdRole },
+  { cmd: 'kick', desc: 'Kick a member', args: true, argHint: '<username>', requiredRole: 'owner' as CmdRole },
   { cmd: 'train', desc: '发起接龙', args: true, argHint: '<标题>' },
   { cmd: 'vote', desc: '发起投票', args: true, argHint: '<标题>' },
 ]
 
-interface MessageInputProps {
-  channelId: string
+const ROLE_HIERARCHY: Record<CmdRole, number> = { owner: 3, admin: 2, member: 1 }
+
+function hasRole(userRole: string | undefined, required: CmdRole): boolean {
+  if (!userRole) return false
+  return (ROLE_HIERARCHY[userRole as CmdRole] ?? 0) >= ROLE_HIERARCHY[required]
 }
 
-export function MessageInput({ channelId }: MessageInputProps) {
+interface MessageInputProps {
+  channelId: string
+  currentRole?: string
+}
+
+export function MessageInput({ channelId, currentRole }: MessageInputProps) {
   const [text, setText] = useState('')
   const [showCodeInput, setShowCodeInput] = useState(false)
   const [voteModalOpen, setVoteModalOpen] = useState(false)
   const [voteInitialTitle, setVoteInitialTitle] = useState('')
+  const [commandIndex, setCommandIndex] = useState(-1)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const commandListRef = useRef<HTMLDivElement>(null)
   const sendMessage = useSendMessage(channelId)
   const uploadFile = useUploadFile(channelId)
 
@@ -67,6 +79,24 @@ export function MessageInput({ channelId }: MessageInputProps) {
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showCommands && filteredCommands.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setCommandIndex(i => i < filteredCommands.length - 1 ? i + 1 : 0)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setCommandIndex(i => i > 0 ? i - 1 : filteredCommands.length - 1)
+        return
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault()
+        const idx = commandIndex >= 0 ? commandIndex : 0
+        selectCommand(filteredCommands[idx])
+        return
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
@@ -86,7 +116,30 @@ export function MessageInput({ channelId }: MessageInputProps) {
 
   const showCommands = text.startsWith('/')
   const cmdFilter = text.startsWith('/') ? text.slice(1).split(/\s+/)[0].toLowerCase() : ''
-  const filteredCommands = showCommands ? COMMANDS.filter(c => c.cmd.startsWith(cmdFilter)) : []
+  const filteredCommands = showCommands
+    ? COMMANDS.filter(c => c.cmd.startsWith(cmdFilter) && (!c.requiredRole || hasRole(currentRole, c.requiredRole)))
+    : []
+
+  // Reset selection when filtered list changes (e.g. typing filters results)
+  useEffect(() => {
+    setCommandIndex(-1)
+  }, [cmdFilter])
+
+  useEffect(() => {
+    // Scroll selected item into view
+    if (commandIndex >= 0 && commandListRef.current) {
+      const items = commandListRef.current.children
+      if (items[commandIndex]) {
+        items[commandIndex].scrollIntoView({ block: 'nearest' })
+      }
+    }
+  }, [commandIndex])
+
+  const selectCommand = (cmd: (typeof COMMANDS)[number]) => {
+    setText(cmd.args ? `/${cmd.cmd} ` : `/${cmd.cmd}`)
+    setCommandIndex(-1)
+    textareaRef.current?.focus()
+  }
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -156,15 +209,13 @@ export function MessageInput({ channelId }: MessageInputProps) {
             )}
           </button>
           {showCommands && filteredCommands.length > 0 && (
-            <div className="absolute left-0 bottom-full mb-1 z-50 rounded-lg border border-zinc-700 bg-zinc-800 shadow-xl py-1 min-w-[200px]">
-              {filteredCommands.map(c => (
+            <div ref={commandListRef} className="absolute left-0 bottom-full mb-1 z-50 rounded-lg border border-zinc-700 bg-zinc-800 shadow-xl py-1 min-w-[200px]">
+              {filteredCommands.map((c, i) => (
                 <button
                   key={c.cmd}
-                  className="flex items-center gap-2 w-full px-3 py-1.5 text-left text-sm hover:bg-zinc-700 text-zinc-300"
-                  onClick={() => {
-                    setText(c.args ? `/${c.cmd} ` : `/${c.cmd}`)
-                    textareaRef.current?.focus()
-                  }}
+                  className={`flex items-center gap-2 w-full px-3 py-1.5 text-left text-sm text-zinc-300 ${i === commandIndex ? 'bg-zinc-700 text-zinc-100' : 'hover:bg-zinc-700'}`}
+                  onMouseEnter={() => setCommandIndex(i)}
+                  onClick={() => selectCommand(c)}
                 >
                   <span className="text-indigo-400 font-mono text-xs">/{c.cmd}</span>
                   {c.args && <span className="text-zinc-500 text-xs">{c.argHint}</span>}
