@@ -258,7 +258,7 @@ pub async fn approve_join_request(
     .bind(serde_json::to_string(&msg_payload).unwrap_or_default())
     .bind(&requester_id)
     .bind(&channel_id)
-    .bind(format!("%{}%", &request_id))
+    .bind(format!("%{}%", request_id))
     .execute(&state.pool)
     .await?;
 
@@ -329,7 +329,7 @@ pub async fn reject_join_request(
     .bind(serde_json::to_string(&msg_payload).unwrap_or_default())
     .bind(&requester_id)
     .bind(&channel_id)
-    .bind(format!("%{}%", &request_id))
+    .bind(format!("%{}%", request_id))
     .execute(&state.pool)
     .await?;
 
