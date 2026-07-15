@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Settings, Loader2 } from 'lucide-react'
-import { useParams, useNavigate } from 'react-router'
+import { useParams, useNavigate, useLocation } from 'react-router'
 import { ChannelSettingsModal } from '../components/ChannelSettingsModal'
 import { ChannelSidebarToggle } from '../components/ChannelSidebar'
 import { MessageList } from '../components/MessageList'
@@ -29,11 +29,13 @@ export function ChannelListPage() {
     }
   }, [channelId, setCurrentChannel])
 
+  const location = useLocation()
+
   useEffect(() => {
-    if (!channelId) {
+    if (!channelId && location.pathname !== '/channels') {
       navigate('/channels', { replace: true })
     }
-  }, [channelId, navigate])
+  }, [channelId, navigate, location.pathname])
 
   const { data: channel, isLoading: channelLoading } = useChannel(channelId ?? null)
   const user = useAuthStore((s) => s.user)

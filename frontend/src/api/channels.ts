@@ -150,3 +150,27 @@ export function useSendMessage(channelId: string) {
     },
   })
 }
+
+// Member response from GET /channels/{channelId}/members
+export interface MemberResponse {
+  id: string
+  channel_id: string
+  user_id: string
+  role: 'member' | 'admin' | 'owner'
+  joined_at: number
+  user: {
+    id: string
+    username: string
+    display_name: string
+    avatar_url: string | null
+    created_at: number
+  }
+}
+
+export function useChannelMembers(channelId: string | null) {
+  return useQuery({
+    queryKey: ['channel-members', channelId],
+    queryFn: () => apiClient<MemberResponse[]>(`/channels/${channelId}/members`),
+    enabled: !!channelId,
+  })
+}

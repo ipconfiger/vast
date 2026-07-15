@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import type { Message } from '../types'
 import { FileText, Download, Check, X, UserPlus, Loader2, Bot, Trash2 } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
@@ -254,6 +254,25 @@ export function MessageBubble({
   channelId,
 }: MessageBubbleProps) {
   const isBotMsg = message.is_bot === true && !isOwn
+  const currentUsername = useAuthStore((s) => s.user?.username)
+
+  const messageText = typeof message.payload === 'string' ? message.payload : message.payload?.text ?? ''
+
+  const isMentioned = useMemo(() => {
+    if (!currentUsername || !messageText) return false
+    const escaped = currentUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    return new RegExp(`@${escaped}(?:\\W|$)`).test(messageText)
+  }, [currentUsername, messageText])
+
+  const [showFlash, setShowFlash] = useState(false)
+
+  useEffect(() => {
+    if (isMentioned) {
+      setShowFlash(true)
+      const timer = setTimeout(() => setShowFlash(false), 2500)
+      return () => clearTimeout(timer)
+    }
+  }, [isMentioned])
 
   const renderContent = () => {
     if (message.payload?._train) {
@@ -305,6 +324,10 @@ export function MessageBubble({
         : isBotMsg
           ? 'bg-indigo-950/30 border-l-2 border-indigo-500/40'
           : ''
+    } ${
+      isMentioned
+        ? 'bg-amber-500/10 border-l-2 border-amber-500/60' + (showFlash ? ' animate-mention-flash' : '')
+        : ''
     }`}>
       {!isOwn && (
         <div className="flex-shrink-0 pt-0.5">

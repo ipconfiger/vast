@@ -13,6 +13,7 @@ const mockNavigate = vi.fn()
 vi.mock('react-router', () => ({
   useParams: () => mockParams,
   useNavigate: () => mockNavigate,
+  useLocation: () => ({ pathname: '/channels', search: '', hash: '', state: null, key: '' }),
   MemoryRouter: ({ children }: { children: ReactNode }) => children,
 }))
 

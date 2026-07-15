@@ -351,16 +351,43 @@ function useWsEventSync(manager: WebSocketManager): void {
         console.log('[Notif] new_msg received', data)
         const ev = data as { channel_id: string; sender_id: string; preview?: string } | null
         if (!ev || typeof ev.channel_id !== 'string' || typeof ev.sender_id !== 'string') return
+
+        const myId = useAuthStore.getState().user?.id
+        if (ev.sender_id === myId) return
+
+        const currentUser = useAuthStore.getState().user
+        const currentChannelId = useChannelStore.getState().currentChannelId
+
+        // Check for @mention
+        const isMentioned = !!(currentUser?.username && ev.preview?.includes(`@${currentUser.username}`))
+
+        // Show toast if @mentioned and not viewing that channel
+        if (isMentioned && currentChannelId !== ev.channel_id) {
+          const channels = useChannelStore.getState().channels
+          const channelLabel = channels.find((c) => c.id === ev.channel_id)?.name || ev.channel_id
+          useToastStore.getState().addToast({
+            type: 'info',
+            message: `@${currentUser!.username} mentioned you in #${channelLabel}`,
+            action: createElement('button', {
+              onClick: () => {
+                window.history.pushState(null, '', '/channels/' + ev.channel_id)
+                window.location.reload()
+              },
+            }, 'Open'),
+          })
+        }
+
+        // Browser notification (only when tab is hidden)
         if (typeof document !== 'undefined' && document.visibilityState !== 'hidden') {
           console.log('[Notif] skipped - tab visible, visibilityState:', document.visibilityState)
           return
         }
         if (typeof Notification !== 'undefined' && Notification.permission !== 'granted') return
-        const myId = useAuthStore.getState().user?.id
-        if (ev.sender_id === myId) return
+
         try {
           console.log('[Notif] showing notification for', ev.channel_id)
-          const n = new Notification('New message', {
+          const title = isMentioned ? 'Someone mentioned you' : 'New message'
+          const n = new Notification(title, {
             body: ev.preview || '',
             data: { url: `/channels/${ev.channel_id}` },
           })
