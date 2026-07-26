@@ -110,7 +110,7 @@ function ChannelHeader({ channelId }: { channelId: string }) {
 
   if (isLoading) {
     return (
-      <div className="flex items-center gap-2 border-b border-zinc-800 px-6 py-3">
+      <div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-3">
         <div className="h-4 w-32 animate-pulse rounded bg-zinc-800" />
       </div>
     )
@@ -118,7 +118,7 @@ function ChannelHeader({ channelId }: { channelId: string }) {
 
   return (
     <>
-      <div className="flex items-center gap-2 border-b border-zinc-800 px-6 py-3">
+      <div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-3">
         <h1 className="font-semibold text-sm text-zinc-100">
           {channel?.name ? `# ${channel.name}` : `# ${channelId.slice(0, 8)}`}
         </h1>

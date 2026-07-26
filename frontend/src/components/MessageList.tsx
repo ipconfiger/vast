@@ -109,7 +109,7 @@ export function MessageList({ channelId }: MessageListProps) {
           senderAvatar={message.sender_id === user?.id ? user?.avatar_url : message.sender_avatar_url}
           senderName={
             message.sender_id === user?.id
-              ? 'You'
+              ? 'Me'
               : getUserDisplayName(message.sender_display_name, message.sender_name, message.sender_id)
           }
           timestamp={dayjs(message.created_at).format('h:mm A')}

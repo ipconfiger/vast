@@ -322,11 +322,11 @@ export function MessageBubble({
       isOwn
         ? 'flex-row-reverse'
         : isBotMsg
-          ? 'bg-indigo-950/30 border-l-2 border-indigo-500/40'
+          ? 'bg-indigo-950/30 shadow-[inset_2px_0_0_0_rgba(99,102,241,0.4)]'
           : ''
     } ${
       isMentioned
-        ? 'bg-amber-500/10 border-l-2 border-amber-500/60' + (showFlash ? ' animate-mention-flash' : '')
+        ? 'bg-amber-500/10 shadow-[inset_2px_0_0_0_rgba(245,158,11,0.6)]' + (showFlash ? ' animate-mention-flash' : '')
         : ''
     }`}>
       {!isOwn && (
@@ -339,7 +339,7 @@ export function MessageBubble({
           />
         </div>
       )}
-      <div className={`min-w-0 ${isOwn ? 'flex-1' : 'flex-1'}`}>
+      <div className={`min-w-0 flex-1`}>
         <div className={`flex items-center gap-2 ${isOwn ? 'flex-row-reverse' : ''}`}>
           <div className="flex items-baseline gap-2 min-w-0">
             {isBotMsg && (

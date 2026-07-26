@@ -299,7 +299,7 @@ export function ChannelSidebar({ onClose }: ChannelSidebarProps) {
           </button>
         </div>
       </div>
-      <div className="border-t border-zinc-800 px-3 py-3 flex items-center gap-1">
+      <div className="border-t border-zinc-800 px-4 py-3 flex items-center gap-1">
         <button onClick={() => { navigate('/profile'); onClose?.() }} className="flex items-center gap-2 flex-1 min-w-0 rounded-md px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors">
           {avatarSrc ? (
             <img src={avatarSrc} className="h-7 w-7 rounded-full object-cover" />

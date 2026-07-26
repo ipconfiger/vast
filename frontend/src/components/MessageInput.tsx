@@ -321,7 +321,7 @@ export function MessageInput({ channelId, currentRole }: MessageInputProps) {
         aria-label="Attach file"
       />
       <div className="message-input border-t border-zinc-800 bg-zinc-900/80 px-4 py-3">
-        <div className="flex items-end gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 focus-within:border-zinc-500 transition-colors relative">
+        <div className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 focus-within:border-zinc-500 transition-colors relative">
           <button
             onClick={() => setShowCodeInput(true)}
             className="flex-shrink-0 rounded-md p-1.5 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 transition-colors"
