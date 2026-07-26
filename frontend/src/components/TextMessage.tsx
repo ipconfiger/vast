@@ -3,6 +3,7 @@ import { Loader2, ExternalLink } from 'lucide-react'
 
 interface TextMessageProps {
   text: string
+  isOwn?: boolean
 }
 
 function toRawUrl(url: string): string {
@@ -76,7 +77,7 @@ function RawContentPreview({ url }: { url: string }) {
   )
 }
 
-export function TextMessage({ text }: TextMessageProps) {
+export function TextMessage({ text, isOwn = false }: TextMessageProps) {
   const trimmed = text.trim()
   const isUrl = isRawUrl(trimmed)
 
@@ -92,7 +93,11 @@ export function TextMessage({ text }: TextMessageProps) {
           return <span key={i}>{part}</span>
         })}
       </span>
-      {isUrl && <RawContentPreview url={trimmed} />}
+      {isUrl && (
+        <div className={`w-full sm:w-1/2 text-left ${isOwn ? 'ml-auto' : 'mr-auto'}`}>
+          <RawContentPreview url={trimmed} />
+        </div>
+      )}
     </div>
   )
 }
