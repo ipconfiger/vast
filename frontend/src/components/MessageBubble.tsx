@@ -274,6 +274,10 @@ export function MessageBubble({
     }
   }, [isMentioned])
 
+  // Hide own join-request system messages entirely (not just content);
+  // otherwise the outer bubble (avatar/name/time/reaction) renders an empty "Me" message.
+  if (message.payload?._join_request && isOwn) return null
+
   const renderContent = () => {
     if (message.payload?._train) {
       return (
