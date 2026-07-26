@@ -21,15 +21,15 @@ export function MessageList({ channelId }: MessageListProps) {
   const { data: messageData, isLoading } = useMessages(channelId)
   const messages = useMessageStore((s) => s.messagesByChannel.get(channelId)) ?? []
 
+  const setMessages = useMessageStore((s) => s.setMessages)
+  const user = useAuthStore((s) => s.user)
+
   // Hide own join-request system messages (backend requests.rs sets sender_id to the
   // requester, so the user would otherwise see an empty "Me" message). Filter at the list
   // level, not in MessageBubble, because react-virtuoso breaks on null/zero-sized items.
   const visibleMessages = messages.filter(
     (m) => !(m.payload?._join_request && m.sender_id === user?.id),
   )
-
-  const setMessages = useMessageStore((s) => s.setMessages)
-  const user = useAuthStore((s) => s.user)
 
   // ── Data flow: sync useMessages (React Query) → messageStore ──
   useEffect(() => {
