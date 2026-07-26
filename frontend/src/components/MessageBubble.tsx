@@ -311,7 +311,11 @@ export function MessageBubble({
       case 'file':
         return <FileMessage payload={message.payload} message={message} />
       case 'code':
-        return <CodeMessage language={message.payload?.language ?? 'plaintext'} code={message.payload?.code ?? ''} filename={message.payload?.filename} />
+        return (
+          <div className={`w-full sm:w-1/2 text-left ${isOwn ? 'ml-auto' : 'mr-auto'}`}>
+            <CodeMessage language={message.payload?.language ?? 'plaintext'} code={message.payload?.code ?? ''} filename={message.payload?.filename} />
+          </div>
+        )
       default:
         return <TextMessage text={typeof message.payload === 'string' ? message.payload : JSON.stringify(message.payload)} />
     }

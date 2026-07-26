@@ -21,11 +21,11 @@ function isRawUrl(text: string): boolean {
     const url = new URL(text)
     const path = url.pathname.toLowerCase()
     const ext = path.split('.').pop()?.split('?')[0] || ''
-    const codeExts = ['yaml', 'yml', 'json', 'toml', 'rs', 'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'py', 'pyi', 'pyx', 'go', 'java', 'kt', 'kts', 'swift', 'c', 'cpp', 'cc', 'cxx', 'h', 'hpp', 'rb', 'php', 'sh', 'bash', 'zsh', 'fish', 'ps1', 'bat', 'cmd', 'md', 'markdown', 'rst', 'txt', 'text', 'env', 'lock', 'ini', 'cfg', 'conf', 'css', 'scss', 'sass', 'less', 'html', 'htm', 'xml', 'svg', 'sql', 'graphql', 'gql', 'proto', 'protobuf', 'vue', 'svelte', 'lua', 'dart', 'r', 'jl', 'hs', 'ex', 'exs', 'erl', 'hrl', 'clj', 'cljs', 'edn', 'zig', 'nim', 'cr', 'ml', 'mli', 'fs', 'fsx', 'fsi', 'pl', 'pm', 'tcl', 'groovy', 'gradle', 'scala', 'sc', 'makefile', 'dockerfile', 'gitignore', 'editorconfig', 'dockerignore', 'properties', 'csv', 'tsv', 'log', 'diff', 'patch', 'tex', 'latex', 'bib', 'cmake', 'meson', 'bazel', 'bzl', 'nix', 'tf', 'tfvars', 'hcl', 'prisma', 'astro', 'solid', 'elm', 'purs', 'dhall', 'cue', 'smithy', 'thrift', 'avsc', 'avdl', 'raml', 'wsdl', 'iml', 'adoc', 'asciidoc', 'org', 'pug', 'jade', 'haml', 'slim', 'ejs', 'njk', 'hbs', 'mustache', 'liquid', 'twig'] as const
     const hasCodeExtension = codeExts.includes(ext as any)
     const hasAllowedHost = ALLOWED_RAW_HOSTS.includes(url.hostname as any)
     const hasRawPath = url.pathname.includes('/raw/')
-    return hasCodeExtension && (hasAllowedHost || hasRawPath)
+    const convertible = toRawUrl(url.href) !== url.href
+    return hasCodeExtension && (hasAllowedHost || hasRawPath || convertible)
   } catch { return false }
 }
 
