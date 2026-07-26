@@ -307,7 +307,7 @@ export function MessageBubble({
           if (message.payload?._owner_only && !isOwn) return null
           return <CommandResult text={message.payload.text} />
         }
-        return <TextMessage text={typeof message.payload === 'string' ? message.payload : message.payload?.text ?? ''} />
+        return <TextMessage text={typeof message.payload === 'string' ? message.payload : message.payload?.text ?? ''} isOwn={isOwn} />
       case 'file':
         return <FileMessage payload={message.payload} message={message} />
       case 'code':
@@ -317,7 +317,7 @@ export function MessageBubble({
           </div>
         )
       default:
-        return <TextMessage text={typeof message.payload === 'string' ? message.payload : JSON.stringify(message.payload)} />
+        return <TextMessage text={typeof message.payload === 'string' ? message.payload : JSON.stringify(message.payload)} isOwn={isOwn} />
     }
   }
 
