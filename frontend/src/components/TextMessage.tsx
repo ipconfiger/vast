@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Loader2, ExternalLink } from 'lucide-react'
+import ChatMarkdown from './ChatMarkdown'
 
 interface TextMessageProps {
   text: string
@@ -84,15 +85,13 @@ export function TextMessage({ text, isOwn = false }: TextMessageProps) {
   const parts = text.split(/(@\w+)/g)
 
   return (
-    <div>
-      <span className="text-message whitespace-pre-wrap break-words">
-        {parts.map((part, i) => {
-          if (part.startsWith('@')) {
-            return <span key={i} className="mention font-semibold">{part}</span>
-          }
-          return <span key={i}>{part}</span>
-        })}
-      </span>
+    <div className="text-message break-words">
+      {parts.map((part, i) => {
+        if (part.startsWith('@')) {
+          return <span key={i} className="mention font-semibold text-blue-400">{part}</span>
+        }
+        return <ChatMarkdown key={i} text={part} />
+      })}
       {isUrl && (
         <div className={`w-full sm:w-1/2 text-left ${isOwn ? 'ml-auto' : 'mr-auto'}`}>
           <RawContentPreview url={trimmed} />
