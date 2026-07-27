@@ -78,7 +78,7 @@ describe('MessageBubble bot rendering', () => {
     const bubble = container.querySelector('.message-bubble')
     expect(bubble).toBeTruthy()
     expect(bubble?.className).toContain('bg-indigo-950/30')
-    expect(bubble?.className).toContain('border-indigo-500/40')
+    expect(bubble?.className).toContain('shadow-[inset')
   })
 
   it('colors the bot sender name with the indigo token', () => {
@@ -109,14 +109,15 @@ describe('MessageBubble bot rendering', () => {
     expect(container.querySelector('svg[aria-label="Bot"]')).toBeNull()
   })
 
-  it('preserves line breaks in bot messages via whitespace-pre-wrap (renders TextMessage)', () => {
+  it('preserves line breaks in bot messages via markdown remark-breaks', () => {
     const multiLine = 'line one\nline two\nline three'
     const { container } = renderBubble(
       makeMessage({ is_bot: true, payload: { text: multiLine } }),
     )
     const textEl = container.querySelector('.text-message')
     expect(textEl).toBeTruthy()
-    expect(textEl?.className).toContain('whitespace-pre-wrap')
+    // remark-breaks converts single newlines to <br>
+    expect(container.querySelector('br')).toBeTruthy()
   })
 
   it('does not show bot UI when the message is the current user (isOwn=true)', () => {
