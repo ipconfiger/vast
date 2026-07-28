@@ -41,10 +41,12 @@ So I built it. Rust + React + SQLite + WebSockets. One binary, one database file
 
 ### AI Bots
 
-- **Channel-resident Hermes Agent bots** — add them as virtual channel members
+- **Channel-resident bots** — add them as virtual channel members that reply inline
 - **@mention activation** — bots only respond when explicitly called, by name or display name
 - **Full channel context** — message history, participants, and thread structure sent to the bot on each @mention
-- **OpenAI-compatible API** — works with any OpenAI-compatible endpoint (local LLMs, cloud APIs, anything)
+- **Two connection modes**:
+  - **HTTP** — VAST calls your bot's OpenAI-compatible endpoint directly (`POST /v1/chat/completions`).  Requires a public URL (ideal for cloud APIs like OpenAI, Groq).
+  - **Connector** — your bot connects **out** to VAST via WebSocket.  No public IP needed.  Works with local LLMs (Ollama, LM Studio, vLLM) and supports multiple bots in one process.
 - **Admin-managed** — create, configure, test connectivity, add/remove from channels from the admin console
 
 ### Access Control
@@ -364,6 +366,66 @@ All admin endpoints require a separate admin JWT (`/api/admin/login`).
 | DELETE | `/api/admin/bots/:id`         | Delete bot (admin)           |
 | POST   | `/api/admin/bots/:id/test`    | Test bot connectivity (admin)|
 | POST   | `/api/channels/:id/bots`      | Add bot to channel (owner)   |
+
+### WebSocket (Bot Connector)
+
+Connect bot connectors at `/ws/bot?key=<connection_key>`. Events use the same protocol as the user WebSocket:
+
+| Direction | Event | Description |
+|-----------|-------|-------------|
+| VAST → Connector | `BotMention` | User @mentioned the bot, with channel context and message history |
+| Connector → VAST | `BotReply` | Connector sends back the LLM response text |
+
+The bot is subscribed to all channels it's a member of automatically. When the connector disconnects, a `Presence(offline)` event is broadcast and future mentions show an offline notice.
+
+### Configuring Bots
+
+#### HTTP Mode (Direct)
+
+For bots with a public API endpoint（OpenAI、Groq、or any self-hosted LLM with a public URL）:
+
+1. Open the admin panel → Bots → **Create Bot**
+2. Set **Connection Mode** to `HTTP`
+3. Fill in the **API URL**（e.g. `https://api.openai.com`）and **API Key**
+4. Assign the bot to a channel
+5. Users can now `@botname` to trigger replies
+
+#### Connector Mode (WebSocket — No Public IP Needed)
+
+For local LLMs behind NAT/firewall（Ollama、LM Studio、vLLM、Hermes Agent）:
+
+1. Open the admin panel → Bots → **Create Bot**
+2. Set **Connection Mode** to `Connector`
+3. **Copy the Connection Key** shown after creation（only shown once）
+4. Assign the bot to a channel
+5. Run a connector alongside your LLM:
+
+```bash
+# Standalone connector (works with any OpenAI-compatible API):
+cd tools
+pip install websockets httpx pyyaml
+# Edit bot-connector.yaml — paste your connection_key and configure the LLM endpoint
+python3 bot-connector.py --config bot-connector.yaml
+
+# Or as a systemd service:
+sudo cp bot-connector.service /etc/systemd/system/
+sudo systemctl enable --now vast-bot-connector
+```
+
+```yaml
+# bot-connector.yaml — example with local Ollama
+vast:
+  url: "ws://your-vast-server:3000/ws/bot"
+bots:
+  - connection_key: "your-uuid-from-admin-panel"
+    llm:
+      url: "http://localhost:11434/v1"   # Ollama
+      model: "qwen2.5:7b"
+      api_key: ""
+    system_prompt: "你是一个友好的中文助手"
+```
+
+See `tools/bot-connector.yaml` for more examples（OpenAI、vLLM、Hermes Agent）and `tools/hermes-vast-plugin.py` for a native Hermes Agent gateway plugin.
 
 ### WebSocket
 
