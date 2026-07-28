@@ -16,6 +16,163 @@ So I built it. Rust + React + SQLite + WebSockets. One binary, one database file
 
 ---
 
+## Quick Start
+
+### Prerequisites
+
+- [Rust](https://rustup.rs) 1.93+
+- [Bun](https://bun.sh) 1.2+
+
+### Development
+
+```bash
+git clone https://github.com/ipconfiger/vast && cd vast
+cp .env.example .env
+
+# Generate a real JWT secret in production:
+# openssl rand -base64 48
+
+make dev
+```
+
+Backend starts on **http://localhost:3000**, frontend dev server on **http://localhost:5173** (with API/WS proxy to the backend).
+
+Admin console: **http://localhost:5173/admin/login** — `admin` / `admin123` in dev mode.
+
+### Production Build
+
+```bash
+./scripts/build.sh
+
+# Binary: target/release/im-server
+# The frontend is embedded — no separate static file serving needed.
+```
+
+### Run
+
+```bash
+cp .env target/release/
+./target/release/im-server
+
+# With TLS:
+TLS_MODE=self-signed ./target/release/im-server
+```
+
+### Docker
+
+```bash
+cp .env.docker.example .env.docker
+# Edit .env.docker — at minimum set JWT_SECRET
+docker compose up -d
+```
+
+---
+
+## Configuration
+
+### Environment Variables
+
+| Variable          | Default                  | Description                         |
+|-------------------|--------------------------|-------------------------------------|
+| `DATABASE_URL`    | `sqlite:vast.db`         | SQLite path                         |
+| `JWT_SECRET`      | `dev-secret-change-me`   | **Change this in production**       |
+| `INVITE_CODE`     | `IM2024`                 | Registration invite code            |
+| `SERVER_PORT`     | `3000`                   | HTTP listen port                    |
+| `UPLOAD_MAX_SIZE` | `52428800`               | Max upload (bytes), default 50 MiB  |
+| `TLS_MODE`        | `none`                   | `none`, `self-signed`, `lets-encrypt`|
+| `ADMIN_USERNAME`  | `admin`                  | Admin console username              |
+| `ADMIN_PASSWORD`  | (empty = disabled)       | Admin console password              |
+
+### Configuring AI Bots
+
+#### HTTP Mode (Direct)
+
+For bots with a public API endpoint（OpenAI、Groq、self-hosted LLM with public URL）:
+
+1. Open the admin panel → Bots → **Create Bot**
+2. Set **Connection Mode** to `HTTP`
+3. Fill in the **API URL**（e.g. `https://api.openai.com`）and **API Key**
+4. Assign the bot to a channel
+5. Users can now `@botname` to trigger replies
+
+#### Connector Mode (WebSocket — No Public IP Needed)
+
+For local LLMs behind NAT/firewall（Ollama、LM Studio、vLLM、Hermes Agent）:
+
+1. Open the admin panel → Bots → **Create Bot**
+2. Set **Connection Mode** to `Connector`
+3. **Copy the Connection Key** shown after creation（only shown once）
+4. Assign the bot to a channel
+5. Choose one of the two connector options:
+
+**Option A: Hermes Agent Plugin**（recommended for Hermes users）
+
+```bash
+cp tools/hermes-vast-plugin.py hermes-agent/gateway/platforms/vast.py
+```
+
+Then add to your Hermes Agent `config.yaml`:
+
+```yaml
+platforms:
+  - type: vast
+    connection_key: "your-connection-key"
+    ws_url: "ws://your-vast-server:3000/ws/bot"
+```
+
+Launch with `hermes gateway` — Hermes manages the WebSocket lifecycle, and your bot inherits Hermes' skill system, memory, and user model.
+
+**Option B: Standalone Connector**（works with any OpenAI-compatible API）
+
+```bash
+cd tools
+pip install websockets httpx pyyaml
+# Edit bot-connector.yaml — paste your connection_key and configure the LLM endpoint
+python3 bot-connector.py --config bot-connector.yaml
+```
+
+```yaml
+# bot-connector.yaml — example with local Ollama
+vast:
+  url: "ws://your-vast-server:3000/ws/bot"
+bots:
+  - connection_key: "your-uuid-from-admin-panel"
+    llm:
+      url: "http://localhost:11434/v1"   # Ollama
+      model: "qwen2.5:7b"
+      api_key: ""
+    system_prompt: "你是一个友好的中文助手"
+```
+
+### Deployment
+
+#### systemd (Recommended)
+
+```bash
+./scripts/build.sh
+sudo ./deploy/install.sh target/release/im-server
+sudo nano /opt/im-server/.env   # Set JWT_SECRET and ADMIN_PASSWORD
+sudo systemctl start im-server
+```
+
+The systemd unit runs as a dedicated `im-server` user with hardening:
+
+- `NoNewPrivileges=true`, `PrivateTmp=true`, `ProtectSystem=strict`
+- Write access limited to `/opt/im-server` and `/var/log/im-server`
+- File descriptor limit: 65536
+
+#### Nginx Reverse Proxy
+
+The included `deploy/nginx.conf` provides TLS termination, WebSocket upgrade, security headers, and rate limiting.
+
+```bash
+sudo cp deploy/nginx.conf /etc/nginx/sites-available/im-server
+sudo ln -s /etc/nginx/sites-available/im-server /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+---
+
 ## What It Can Do
 
 ### Messaging
@@ -23,14 +180,15 @@ So I built it. Rust + React + SQLite + WebSockets. One binary, one database file
 - **Channels** — public and private, with archive/unarchive + ZIP download for history export
 - **Threads** — nested replies that don't clutter the main channel view
 - **Direct Messages** — one-on-one conversations, private by default
-- **Reactions** — emoji reactions on any message (Slack-style, not Discord-style — pick any emoji, not just a fixed set)
+- **Reactions** — emoji reactions on any message (pick any emoji, not just a fixed set)
+- **Message quoting** — reply with inline quote preview for context
 - **Typing indicators** and **presence** — see who's online and who's typing, live
 
 ### Files
 
 - **Upload** with multipart support, up to 50 MiB by default (configurable)
 - **Indexed listing** with keyset pagination, grid/list views, and infinite scroll
-- **Soft delete** — files are marked deleted but recoverable; clients see 410 Gone for deleted files
+- **Soft delete** — files are marked deleted but recoverable; clients see 410 Gone
 - **Access control** — files are scoped to the channel they were uploaded to
 
 ### Search
@@ -94,7 +252,7 @@ Browser push notifications via service worker. Subscribe from the app, get notif
 │  │   (JWT)   │ │ + Threads │ │  (FTS5)   │ │  (50 MiB)  │ │
 │  ├───────────┤ ├───────────┤ ├───────────┤ ├─────────────┤ │
 │  │  Bots     │ │    DM     │ │ Reactions │ │  Web Push   │ │
-│  │ (Hermes)  │ │           │ │           │ │             │ │
+│  │ + WS /bot │ │           │ │           │ │             │ │
 │  ├───────────┤ ├───────────┤ ├───────────┤ ├─────────────┤ │
 │  │  Admin    │ │           │ │           │ │             │ │
 │  │(JWT+audit)│ │           │ │           │ │             │ │
@@ -103,6 +261,15 @@ Browser push notifications via service worker. Subscribe from the app, get notif
 │  ├────────────────────────────────────────────────────────┤ │
 │  │         SQLite (WAL mode, compile-time migrations)      │ │
 │  └────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Bot Connector (optional)                        │
+│  ┌─────────────────┐                                        │
+│  │  Connector /    │  ── HTTP ──►  LLM API                  │
+│  │  Hermes Plugin  │              (Ollama / vLLM / OpenAI) │
+│  └─────────────────┘                                        │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -115,50 +282,6 @@ Browser push notifications via service worker. Subscribe from the app, get notif
 **SQLite** — The database is a single file. Back it up with `cp`. Migrations are embedded at compile time, so the server auto-creates and auto-migrates on first run. WAL mode gives concurrent read performance good enough for a team-sized IM server.
 
 **WebSocket** — Axum's native WebSocket support means no extra dependency for real-time. Messages, typing, presence, reactions — all go over the same persistent connection. The broadcast hub uses Tokio channels internally.
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- [Rust](https://rustup.rs) 1.93+
-- [Bun](https://bun.sh) 1.2+
-
-### Development
-
-```bash
-git clone <repo-url> && cd vast
-cp .env.example .env
-
-# Generate a real JWT secret in production:
-# openssl rand -base64 48
-
-make dev
-```
-
-Backend starts on **http://localhost:3000**, frontend dev server on **http://localhost:5173** (with API/WS proxy to the backend).
-
-Admin console: **http://localhost:5173/admin/login** — `admin` / `admin123` in dev mode.
-
-### Production Build
-
-```bash
-./scripts/build.sh
-
-# Binary: target/release/im-server
-# The frontend is embedded — no separate static file serving needed.
-```
-
-### Run
-
-```bash
-cp .env target/release/
-./target/release/im-server
-
-# With TLS:
-TLS_MODE=self-signed ./target/release/im-server
-```
 
 ---
 
@@ -176,7 +299,6 @@ TLS_MODE=self-signed ./target/release/im-server
 | Frontend         | React 19, Vite 7, Tailwind CSS 4                  |
 | State management | Zustand 5 (client), TanStack React Query 5 (server) |
 | Routing          | React Router 7                                   |
-| HTTP client      | reqwest 0.12 (bot API calls)                     |
 | Push             | web-push 0.11                                    |
 | Testing          | cargo test, vitest, Playwright (E2E)             |
 
@@ -190,75 +312,28 @@ vast/
 │   ├── main.rs               # Entrypoint, TLS setup, graceful shutdown
 │   ├── lib.rs                # AppState, router, health check
 │   ├── embed.rs              # Frontend SPA embedding (rust-embed)
-│   ├── error.rs              # Unified error → JSON responses
-│   ├── auth/
-│   │   ├── mod.rs            # JWT creation/validation, Argon2 hashing
-│   │   ├── middleware.rs     # AuthenticatedUser extractor
-│   │   └── admin.rs          # Admin JWT domain (separate from user)
-│   ├── db/mod.rs             # Pool init, WAL, compile-time migrations
-│   ├── ws/
-│   │   ├── mod.rs            # Connection pool, broadcast, heartbeat
-│   │   └── protocol.rs       # ClientEvent / ServerEvent types
-│   ├── bot/
-│   │   ├── mod.rs
-│   │   └── hermes.rs         # OpenAI-compatible HTTP client
-│   ├── push/
-│   │   ├── mod.rs            # VAPID key management
-│   │   └── sender.rs         # Web Push sender
-│   ├── api/
-│   │   ├── mod.rs            # Sub-router
-│   │   ├── auth.rs           # Register / Login
-│   │   ├── channels.rs       # Channel CRUD + archive
-│   │   ├── channel_members.rs
-│   │   ├── messages.rs       # Messages + threads
-│   │   ├── dm.rs             # Direct messages
-│   │   ├── files.rs          # Upload, download, listing, soft delete
-│   │   ├── reactions.rs      # Emoji reactions
-│   │   ├── search.rs         # Full-text search (FTS5)
-│   │   ├── requests.rs       # Join requests
-│   │   ├── invitations.rs
-│   │   ├── presence.rs
-│   │   ├── push.rs           # Web Push subscriptions
-│   │   ├── trains.rs         # Collaborative train feature
-│   │   ├── votes.rs          # Polls/voting
-│   │   └── admin/
-│   │       ├── mod.rs        # Dashboard, users, invite codes, audit
-│   │       └── bots.rs       # Bot CRUD + test endpoint
-│   └── db/migrations/        # 9 compile-time SQL migrations
-│       ├── 001_initial_schema
-│       ├── 002_add_session_active
-│       ├── 003_add_trains
-│       ├── 004_add_votes
-│       ├── 005_token_epoch
-│       ├── 006_admin_audit_logs
-│       ├── 007_bots
-│       ├── 008_file_index
-│       └── 009_push_tables
+│   ├── auth/                 # JWT creation/validation + admin domain
+│   ├── db/                   # Pool init, WAL, compile-time migrations
+│   ├── ws/                   # Connection pool, broadcast, heartbeat, /ws/bot
+│   ├── bot/                  # OpenAI-compatible HTTP client
+│   ├── push/                 # Web Push (VAPID)
+│   └── api/                  # REST endpoints (18 modules)
+│       └── admin/            # Admin console endpoints
 ├── frontend/                 # React SPA
 │   └── src/
-│       ├── main.tsx          # Entrypoint + service worker
-│       ├── App.tsx           # Router (user + admin routes)
-│       ├── api/              # API client modules per feature
-│       ├── components/       # UI components
-│       ├── pages/            # Route pages
-│       │   └── admin/        # Admin pages (Dashboard, Users, Bots, etc.)
-│       ├── hooks/            # useWebSocket, useUnreadTracker, useCursorSync
-│       ├── stores/           # Zustand stores (auth, channel, message, unread)
-│       └── types/            # TypeScript interfaces
+│       ├── components/       # UI components (MessageBubble, MessageInput, ...)
+│       ├── pages/            # Route pages + admin/
+│       ├── hooks/            # useWebSocket, useCursorSync
+│       └── stores/           # Zustand stores
+├── tools/                    # Bot connectors
+│   ├── bot-connector.py      # Standalone WebSocket connector
+│   ├── bot-connector.yaml    # Example configuration
+│   ├── bot-connector.service # systemd unit
+│   └── hermes-vast-plugin.py # Hermes Agent gateway plugin
+├── db/migrations/            # 12 compile-time SQL migrations
 ├── tests/integration/        # 28 Rust integration tests
-├── deploy/
-│   ├── install.sh            # systemd service installer
-│   ├── im-server.service     # Hardened systemd unit
-│   └── nginx.conf            # Production reverse proxy
-├── scripts/
-│   ├── build.sh              # One-click build
-│   ├── bench.sh              # Benchmark suite
-│   ├── dev-server.sh         # Dev mode launcher
-│   ├── e2e-test.sh
-│   ├── gen-self-signed-cert.sh
-│   └── clean-db.sh
-├── certs/                    # TLS certificates
-└── data/                     # Runtime data (DB, uploads)
+├── deploy/                   # systemd + nginx deployment files
+└── scripts/                  # Build, bench, dev scripts
 ```
 
 ---
@@ -342,18 +417,12 @@ All admin endpoints require a separate admin JWT (`/api/admin/login`).
 | Method | Path                                    | Description              |
 |--------|-----------------------------------------|--------------------------|
 | POST   | `/api/admin/login`                      | Admin login              |
-| POST   | `/api/admin/logout`                     | Admin logout             |
-| POST   | `/api/admin/refresh`                    | Refresh admin token      |
-| GET    | `/api/admin/me`                         | Get admin info           |
 | GET    | `/api/admin/dashboard`                  | Dashboard stats          |
 | GET    | `/api/admin/users`                      | List users               |
-| GET    | `/api/admin/users/{id}`                 | Get user details         |
 | PATCH  | `/api/admin/users/{id}`                 | Update (disable/enable)  |
-| POST   | `/api/admin/users/{id}/reset-password`  | Reset user password      |
 | DELETE | `/api/admin/users/{id}`                 | Delete user              |
 | GET    | `/api/admin/invite-codes`               | List invite codes        |
 | POST   | `/api/admin/invite-codes`               | Create invite code       |
-| PATCH  | `/api/admin/invite-codes/{code}`        | Update invite code       |
 | DELETE | `/api/admin/invite-codes/{code}`        | Delete invite code       |
 | GET    | `/api/admin/audit-logs`                 | Audit log (filterable)   |
 
@@ -366,98 +435,21 @@ All admin endpoints require a separate admin JWT (`/api/admin/login`).
 | GET    | `/api/admin/bots`             | List all bots (admin)        |
 | PATCH  | `/api/admin/bots/:id`         | Update bot (admin)           |
 | DELETE | `/api/admin/bots/:id`         | Delete bot (admin)           |
-| POST   | `/api/admin/bots/:id/test`    | Test bot connectivity (admin)|
+| POST   | `/api/admin/bots/:id/test`    | Test connectivity (admin)    |
 | POST   | `/api/channels/:id/bots`      | Add bot to channel (owner)   |
 
 ### WebSocket (Bot Connector)
 
-Connect bot connectors at `/ws/bot?key=<connection_key>`. Events use the same protocol as the user WebSocket:
+Connect bot connectors at `/ws/bot?key=<connection_key>`.
 
 | Direction | Event | Description |
 |-----------|-------|-------------|
-| VAST → Connector | `BotMention` | User @mentioned the bot, with channel context and message history |
+| VAST → Connector | `BotMention` | User @mentioned the bot, with channel context |
 | Connector → VAST | `BotReply` | Connector sends back the LLM response text |
 
-The bot is subscribed to all channels it's a member of automatically. When the connector disconnects, a `Presence(offline)` event is broadcast and future mentions show an offline notice.
+### WebSocket (User)
 
-### Configuring Bots
-
-#### HTTP Mode (Direct)
-
-For bots with a public API endpoint（OpenAI、Groq、or any self-hosted LLM with a public URL）:
-
-1. Open the admin panel → Bots → **Create Bot**
-2. Set **Connection Mode** to `HTTP`
-3. Fill in the **API URL**（e.g. `https://api.openai.com`）and **API Key**
-4. Assign the bot to a channel
-5. Users can now `@botname` to trigger replies
-
-#### Connector Mode (WebSocket — No Public IP Needed)
-
-For local LLMs behind NAT/firewall（Ollama、LM Studio、vLLM、Hermes Agent）:
-
-1. Open the admin panel → Bots → **Create Bot**
-2. Set **Connection Mode** to `Connector`
-3. **Copy the Connection Key** shown after creation（only shown once）
-4. Assign the bot to a channel
-5. Choose one of the two connector options:
-
-**Option A: Hermes Agent Plugin**（recommended for Hermes users）
-
-Drop the plugin into your Hermes Agent gateway and configure it:
-
-```bash
-cp tools/hermes-vast-plugin.py hermes-agent/gateway/platforms/vast.py
-```
-
-Then add to your Hermes Agent `config.yaml`:
-
-```yaml
-platforms:
-  - type: vast
-    connection_key: "your-connection-key"
-    ws_url: "ws://your-vast-server:3000/ws/bot"
-```
-
-Launch with `hermes gateway` — Hermes manages the WebSocket connection lifecycle, and your bot inherits Hermes' skill system, memory, and user model.
-
-**Option B: Standalone Connector**（works with any OpenAI-compatible API）
-
-```bash
-cd tools
-pip install websockets httpx pyyaml
-# Edit bot-connector.yaml — paste your connection_key and configure the LLM endpoint
-python3 bot-connector.py --config bot-connector.yaml
-
-# Or as a systemd service:
-sudo cp bot-connector.service /etc/systemd/system/
-sudo systemctl enable --now vast-bot-connector
-```
-
-```yaml
-# bot-connector.yaml — example with local Ollama
-vast:
-  url: "ws://your-vast-server:3000/ws/bot"
-bots:
-  - connection_key: "your-uuid-from-admin-panel"
-    llm:
-      url: "http://localhost:11434/v1"   # Ollama
-      model: "qwen2.5:7b"
-      api_key: ""
-    system_prompt: "你是一个友好的中文助手"
-```
-
-See `tools/bot-connector.yaml` for more examples（OpenAI、vLLM、Hermes Agent）.
-
-### WebSocket
-
-Connect to `/ws?token=<jwt_token>`. Events streamed over the connection:
-
-- **New messages** (broadcast to channel)
-- **Typing indicators**
-- **Presence updates** (online/offline)
-- **Message reactions**
-- **Message/status changes**
+Connect at `/ws?token=<jwt_token>`. Events: New messages, typing, presence, reactions, message changes.
 
 ### Health
 
@@ -468,68 +460,19 @@ Connect to `/ws?token=<jwt_token>`. Events streamed over the connection:
 
 ---
 
-## Deployment
-
-### systemd (Recommended)
-
-```bash
-./scripts/build.sh
-sudo ./deploy/install.sh target/release/im-server
-sudo nano /opt/im-server/.env   # Set JWT_SECRET and ADMIN_PASSWORD
-sudo systemctl start im-server
-```
-
-The systemd unit runs as a dedicated `im-server` user with hardening:
-
-- `NoNewPrivileges=true`, `PrivateTmp=true`, `ProtectSystem=strict`
-- Write access limited to `/opt/im-server` and `/var/log/im-server`
-- File descriptor limit: 65536
-
-### Nginx Reverse Proxy
-
-The included `deploy/nginx.conf` provides:
-
-- TLS termination
-- HTTP → HTTPS redirect
-- WebSocket upgrade support
-- Security headers (HSTS, XSS, frame options)
-- 50 MiB request body limit
-- Rate limiting
-
-```bash
-sudo cp deploy/nginx.conf /etc/nginx/sites-available/im-server
-sudo ln -s /etc/nginx/sites-available/im-server /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-### Environment Variables
-
-| Variable          | Default                  | Description                         |
-|-------------------|--------------------------|-------------------------------------|
-| `DATABASE_URL`    | `sqlite:vast.db`         | SQLite path                         |
-| `JWT_SECRET`      | `dev-secret-change-me`   | **Change this in production**       |
-| `INVITE_CODE`     | `IM2024`                 | Registration invite code            |
-| `SERVER_PORT`     | `3000`                   | HTTP listen port                    |
-| `UPLOAD_MAX_SIZE` | `52428800`               | Max upload (bytes), default 50 MiB  |
-| `TLS_MODE`        | `none`                   | `none`, `self-signed`, `lets-encrypt`|
-| `ADMIN_USERNAME`  | `admin`                  | Admin console username              |
-| `ADMIN_PASSWORD`  | (empty = disabled)       | Admin console password              |
-
----
-
 ## Development
 
 ```bash
 # Run all tests
 make test
 
-# Frontend unit tests (~180 tests)
+# Frontend unit tests
 cd frontend && bun test
 
-# Backend tests (259 unit + 28 integration)
+# Backend tests
 make test-backend
 
-# E2E tests (requires dev servers on :3000 + :5173)
+# E2E tests
 make test-e2e
 
 # Lint
