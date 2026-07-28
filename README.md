@@ -45,8 +45,10 @@ So I built it. Rust + React + SQLite + WebSockets. One binary, one database file
 - **@mention activation** — bots only respond when explicitly called, by name or display name
 - **Full channel context** — message history, participants, and thread structure sent to the bot on each @mention
 - **Two connection modes**:
-  - **HTTP** — VAST calls your bot's OpenAI-compatible endpoint directly (`POST /v1/chat/completions`).  Requires a public URL (ideal for cloud APIs like OpenAI, Groq).
-  - **Connector** — your bot connects **out** to VAST via WebSocket.  No public IP needed.  Works with local LLMs (Ollama, LM Studio, vLLM) and supports multiple bots in one process.
+  - **HTTP** — VAST calls your bot's OpenAI-compatible endpoint directly. Requires a public URL（ideal for cloud APIs like OpenAI, Groq）.
+  - **Connector（WebSocket）** — your bot connects **out** to VAST. No public IP needed. Two connector options:
+    - **Standalone Connector** — a ~200-line Python script that bridges VAST to any OpenAI-compatible API（Ollama, vLLM, LM Studio）.  One process can manage multiple bots.
+    - **Hermes Agent Plugin** — a native gateway plugin for [Hermes Agent](https://github.com/nousresearch/hermes-agent).  Zero extra process; leverages Hermes' skill system, memory, and user model.
 - **Admin-managed** — create, configure, test connectivity, add/remove from channels from the admin console
 
 ### Access Control
@@ -398,10 +400,30 @@ For local LLMs behind NAT/firewall（Ollama、LM Studio、vLLM、Hermes Agent）
 2. Set **Connection Mode** to `Connector`
 3. **Copy the Connection Key** shown after creation（only shown once）
 4. Assign the bot to a channel
-5. Run a connector alongside your LLM:
+5. Choose one of the two connector options:
+
+**Option A: Hermes Agent Plugin**（recommended for Hermes users）
+
+Drop the plugin into your Hermes Agent gateway and configure it:
 
 ```bash
-# Standalone connector (works with any OpenAI-compatible API):
+cp tools/hermes-vast-plugin.py hermes-agent/gateway/platforms/vast.py
+```
+
+Then add to your Hermes Agent `config.yaml`:
+
+```yaml
+platforms:
+  - type: vast
+    connection_key: "your-connection-key"
+    ws_url: "ws://your-vast-server:3000/ws/bot"
+```
+
+Launch with `hermes gateway` — Hermes manages the WebSocket connection lifecycle, and your bot inherits Hermes' skill system, memory, and user model.
+
+**Option B: Standalone Connector**（works with any OpenAI-compatible API）
+
+```bash
 cd tools
 pip install websockets httpx pyyaml
 # Edit bot-connector.yaml — paste your connection_key and configure the LLM endpoint
@@ -425,7 +447,7 @@ bots:
     system_prompt: "你是一个友好的中文助手"
 ```
 
-See `tools/bot-connector.yaml` for more examples（OpenAI、vLLM、Hermes Agent）and `tools/hermes-vast-plugin.py` for a native Hermes Agent gateway plugin.
+See `tools/bot-connector.yaml` for more examples（OpenAI、vLLM、Hermes Agent）.
 
 ### WebSocket
 

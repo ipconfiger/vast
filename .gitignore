@@ -36,3 +36,4 @@ db/*.db
 
 # === Logs ===
 *.log
+tools/__pycache__/
