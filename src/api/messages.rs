@@ -887,6 +887,27 @@ async fn trigger_bot_response(
         })
         .collect();
 
+    // ── Ack placeholder: insert + broadcast immediately so the user sees
+    //     that the bot received the request before the LLM round-trip. ──
+    if depth == 0 {
+        let ack_text = format!("收到，{} 正在处理...", bot.name);
+        if let Some(ack_id) =
+            insert_bot_message(&pool, &channel_id, &bot.user_id, &ack_text).await
+        {
+            ws_pool.notify_channel(
+                &channel_id,
+                ServerEvent::NewMsg {
+                    channel_id: channel_id.clone(),
+                    cursor: ack_id,
+                    sender_id: bot.user_id.clone(),
+                    msg_type: "text".to_string(),
+                    preview: ack_text,
+                    quoted_message_id: None,
+                },
+            );
+        }
+    }
+
     let result = HermesClient::new()
         .chat(
             &bot.api_url,
@@ -1942,7 +1963,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(count, 1, "cooldown should have suppressed the second trigger");
+        assert_eq!(count, 2, "first trigger produces ack + error; cooldown should have suppressed the second trigger");
     }
 
     /// Given: trigger_bot_response is called with `depth >= BOT_MAX_CHAIN_DEPTH`.
