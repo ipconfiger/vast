@@ -55,7 +55,13 @@ export default function AdminBotsPage() {
   const createMutation = useMutation({
     mutationFn: createBot,
     onSuccess: (created) => {
-      toast.success(`Bot "${created.name}" created`)
+      const keyMsg = created.connection_key
+        ? ` Bot "${created.name}" created. Connection Key: ${created.connection_key} (copy now, won't be shown again)`
+        : `Bot "${created.name}" created`
+      toast.success(keyMsg)
+      if (created.connection_key) {
+        navigator.clipboard.writeText(created.connection_key).catch(() => {})
+      }
       setCreateOpen(false)
       invalidateList()
     },
@@ -183,6 +189,7 @@ export default function AdminBotsPage() {
               <tr>
                 <th className="px-4 py-3 font-medium">Name</th>
                 <th className="px-4 py-3 font-medium">Display Name</th>
+                <th className="px-4 py-3 font-medium">Connection</th>
                 <th className="px-4 py-3 font-medium">API URL</th>
                 <th className="px-4 py-3 font-medium">Status</th>
                 <th className="px-4 py-3 font-medium">Created</th>
@@ -197,6 +204,15 @@ export default function AdminBotsPage() {
                   </td>
                   <td className="px-4 py-3 text-zinc-300">
                     {bot.display_name || '-'}
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                      bot.connection_mode === 'connector'
+                        ? 'bg-purple-500/20 text-purple-300'
+                        : 'bg-zinc-700 text-zinc-300'
+                    }`}>
+                      {bot.connection_mode === 'connector' ? 'Connector' : 'HTTP'}
+                    </span>
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-zinc-400">
                     {bot.api_url}
@@ -292,7 +308,8 @@ export default function AdminBotsPage() {
           onSubmit={(payload) => {
             const body: Parameters<typeof updateBot>[1] = {
               display_name: payload.display_name,
-              api_url: payload.api_url,
+              connection_mode: payload.connection_mode,
+              api_url: payload.connection_mode === 'connector' ? '' : payload.api_url,
               system_prompt: payload.system_prompt,
               model: payload.model,
             }
@@ -319,6 +336,7 @@ export default function AdminBotsPage() {
 interface FormPayload {
   name: string
   display_name: string
+  connection_mode: string
   api_url: string
   api_key: string
   system_prompt: string
@@ -347,6 +365,7 @@ function BotFormModal({
 }: BotFormModalProps) {
   const [name, setName] = useState(bot?.name ?? '')
   const [displayName, setDisplayName] = useState(bot?.display_name ?? '')
+  const [connectionMode, setConnectionMode] = useState(bot?.connection_mode ?? 'http')
   const [apiUrl, setApiUrl] = useState(bot?.api_url ?? '')
   const [apiKey, setApiKey] = useState('')
   const [systemPrompt, setSystemPrompt] = useState(bot?.system_prompt ?? '')
@@ -355,7 +374,7 @@ function BotFormModal({
   const trimmedName = name.trim()
   const trimmedUrl = apiUrl.trim()
   const canSubmit =
-    trimmedName.length >= 1 && trimmedUrl.length >= 1 && !isPending
+    trimmedName.length >= 1 && (connectionMode === 'connector' || trimmedUrl.length >= 1) && !isPending
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -363,7 +382,8 @@ function BotFormModal({
     const payload: FormPayload = {
       name: trimmedName,
       display_name: displayName.trim(),
-      api_url: trimmedUrl,
+      connection_mode: connectionMode,
+      api_url: connectionMode === 'connector' ? '' : trimmedUrl,
       api_key: apiKey,
       system_prompt: systemPrompt,
       model: model.trim() || 'hermes',
@@ -434,6 +454,34 @@ function BotFormModal({
           </div>
 
           <div>
+            <label className="mb-1.5 block text-sm font-medium text-zinc-300">
+              Connection Mode
+            </label>
+            <div className="flex gap-2">
+              {(['http', 'connector'] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setConnectionMode(mode)}
+                  className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium transition-all ${
+                    connectionMode === mode
+                      ? 'border-indigo-500 bg-indigo-500/20 text-indigo-300'
+                      : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  {mode === 'http' ? 'HTTP (Direct)' : 'Connector (WS)'}
+                </button>
+              ))}
+            </div>
+            <p className="mt-1 text-xs text-zinc-500">
+              {connectionMode === 'http'
+                ? 'VAST calls the bot API directly (requires public URL).'
+                : 'Bot connects to VAST via WebSocket (no public IP needed).'}
+            </p>
+          </div>
+
+          {connectionMode === 'http' && (
+          <div>
             <label
               htmlFor="bot-api-url"
               className="mb-1.5 block text-sm font-medium text-zinc-300"
@@ -475,6 +523,7 @@ function BotFormModal({
               </p>
             )}
           </div>
+          )}
 
           <div>
             <label

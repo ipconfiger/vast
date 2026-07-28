@@ -204,6 +204,16 @@ impl ConnectionPool {
             .get(user_id)
             .is_some_and(|entry| !entry.is_empty())
     }
+
+    /// Register a bot connection (same internal bookkeeping as user connections).
+    pub fn register_bot(&self, bot_user_id: &str, connection_id: &str) -> broadcast::Receiver<ServerEvent> {
+        self.register(bot_user_id, connection_id)
+    }
+
+    /// Unregister a bot connection.
+    pub fn unregister_bot(&self, bot_user_id: &str, connection_id: &str) {
+        self.unregister(bot_user_id, connection_id);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -263,6 +273,196 @@ pub async fn ws_handler(
 }
 
 // ---------------------------------------------------------------------------
+// Bot WS handler
+// ---------------------------------------------------------------------------
+
+/// Axum handler for GET /ws/bot?key=<connection_key>
+///
+/// Authenticates a bot connector by its `connection_key`, then upgrades to
+/// WebSocket. The bot's user_id is resolved from the `bots` table and the
+/// connection is registered in the connection pool with `is_bot = true`.
+#[instrument(skip(ws, state))]
+pub async fn ws_bot_handler(
+    ws: WebSocketUpgrade,
+    Query(params): Query<HashMap<String, String>>,
+    State(state): State<Arc<AppState>>,
+) -> impl axum::response::IntoResponse {
+    let key = params.get("key").cloned().unwrap_or_default();
+    if key.is_empty() {
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(json!({
+                "error": { "code": "UNAUTHORIZED", "message": "Missing connection key" }
+            })),
+        )
+            .into_response();
+    }
+
+    // Look up the bot by connection_key and resolve its user_id.
+    let bot: (String, String, String) = match sqlx::query_as::<_, (String, String, String)>(
+        "SELECT b.user_id, b.id, b.name FROM bots b
+         WHERE b.connection_key = ? AND b.connection_mode = 'connector' AND b.is_active = 1",
+    )
+    .bind(&key)
+    .fetch_optional(&state.pool)
+    .await
+    {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            warn!("WebSocket bot connection rejected: invalid key");
+            return (
+                StatusCode::UNAUTHORIZED,
+                axum::Json(json!({
+                    "error": { "code": "UNAUTHORIZED", "message": "Invalid connection key" }
+                })),
+            ).into_response();
+        }
+        Err(e) => {
+            warn!(%e, "WebSocket bot connection: DB error");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({
+                    "error": { "code": "INTERNAL", "message": "Database error" }
+                })),
+            ).into_response();
+        }
+    };
+
+    let (bot_user_id, bot_id, bot_name) = bot;
+    info!(bot_user_id, bot_id, bot_name, "Bot WebSocket upgrade requested");
+
+    let db_pool = state.pool.clone();
+    ws.on_upgrade(move |socket| handle_bot_socket(socket, bot_user_id, bot_id, state.ws_pool.clone(), db_pool))
+}
+
+/// Per-bot-connection loop. Identical in structure to `handle_socket` but
+/// registers as a bot and subscribes to all channels the bot is a member of.
+async fn handle_bot_socket(
+    mut socket: WebSocket,
+    bot_user_id: UserId,
+    bot_id: String,
+    pool: Arc<ConnectionPool>,
+    db_pool: sqlx::SqlitePool,
+) {
+    let connection_id = Uuid::new_v4().to_string();
+    let _ = pool.register_bot(&bot_user_id, &connection_id);
+    info!(bot_user_id, %connection_id, "Bot WebSocket connected");
+
+    // Subscribe to channels the bot is a member of.
+    let presence = ServerEvent::Presence {
+        user_id: bot_user_id.clone(),
+        status: "online".to_string(),
+    };
+    let _ = pool.global_tx.send(presence);
+
+    let mut broadcast_rx = pool.global_tx.subscribe();
+    let mut last_heartbeat = Instant::now();
+    let mut pending_mention: Option<String> = None;
+
+    loop {
+        tokio::select! {
+            ws_msg = socket.recv() => {
+                match ws_msg {
+                    Some(Ok(Message::Text(text))) => {
+                        last_heartbeat = Instant::now();
+                        match serde_json::from_str::<ClientEvent>(text.as_str()) {
+                            Ok(ClientEvent::BotReply { mention_id, channel_id, text }) => {
+                                info!(%mention_id, %channel_id, "Bot replied");
+                                // Insert the bot reply as a message and broadcast.
+                                let msg_id = Uuid::new_v4().to_string();
+                                let payload = serde_json::json!({"text": text}).to_string();
+                                if let Ok(inserted_id) = sqlx::query_scalar::<_, i64>(
+                                    "INSERT INTO messages (msg_id, channel_id, sender_id, msg_type, payload)
+                                     VALUES (?, ?, ?, 'text', ?) RETURNING id",
+                                )
+                                .bind(&msg_id)
+                                .bind(&channel_id)
+                                .bind(&bot_user_id)
+                                .bind(&payload)
+                                .fetch_one(&db_pool)
+                                .await
+                                {
+                                    pool.notify_channel(
+                                        &channel_id,
+                                        ServerEvent::NewMsg {
+                                            channel_id: channel_id.clone(),
+                                            cursor: inserted_id,
+                                            sender_id: bot_user_id.clone(),
+                                            msg_type: "text".to_string(),
+                                            preview: text.chars().take(100).collect(),
+                                            quoted_message_id: None,
+                                        },
+                                    );
+                                }
+                            }
+                            Ok(ClientEvent::Ping) => {
+                                let pong = serde_json::to_string(&ServerEvent::Pong).unwrap();
+                                let _ = socket.send(Message::Text(pong.into())).await;
+                            }
+                            _ => {
+                                debug!("Ignored unknown bot client event");
+                            }
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) => break,
+                    Some(Ok(Message::Pong(_))) => {
+                        last_heartbeat = Instant::now();
+                    }
+                    Some(Ok(_)) => {
+                        last_heartbeat = Instant::now();
+                    }
+                    Some(Err(e)) => {
+                        warn!(%e, "Bot WebSocket recv error");
+                        break;
+                    }
+                    None => break,
+                }
+            }
+
+            // ── Outbound broadcast ───────────────────────────────
+            broadcast_msg = broadcast_rx.recv() => {
+                match broadcast_msg {
+                    Ok(event) => {
+                        // Forward BotMention events to this specific bot.
+                        if let ServerEvent::BotMention { mention_id, .. } = &event {
+                            pending_mention = Some(mention_id.clone());
+                        }
+                        let json = serde_json::to_string(&event).unwrap_or_default();
+                        if socket.send(Message::Text(json.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(n, "Bot broadcast channel lagged");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+
+            // ── Heartbeat ────────────────────────────────────────
+            _ = tokio::time::sleep(HEARTBEAT_INTERVAL) => {
+                if last_heartbeat.elapsed() > HEARTBEAT_TIMEOUT {
+                    warn!(bot_user_id, "Bot heartbeat timeout");
+                    break;
+                }
+                if socket.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
+    // Cleanup
+    let presence = ServerEvent::Presence {
+        user_id: bot_user_id.clone(),
+        status: "offline".to_string(),
+    };
+    let _ = pool.global_tx.send(presence);
+    pool.unregister_bot(&bot_user_id, &connection_id);
+    info!(bot_user_id, "Bot WebSocket disconnected");
+}
+
+// ---------------------------------------------------------------------------
 // Per-socket handler
 // ---------------------------------------------------------------------------
 
@@ -315,6 +515,9 @@ async fn handle_socket(mut socket: WebSocket, user_id: UserId, pool: Arc<Connect
                             Ok(ClientEvent::Unsubscribe { channel_id }) => {
                                 info!(user_id, %channel_id, %connection_id, "unsubscribe");
                                 pool.unsubscribe_channel(&connection_id, &channel_id);
+                            }
+                            Ok(ClientEvent::BotReply { .. }) => {
+                                // BotReply is handled by the bot WS loop; ignore in user sockets.
                             }
                             Err(e) => {
                                 warn!(%e, "Failed to parse ClientEvent from client");

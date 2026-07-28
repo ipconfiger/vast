@@ -255,6 +255,7 @@ pub fn build_app(state: Arc<AppState>) -> Router {
     Router::new()
         .nest("/api", api_routes())
         .route("/ws", get(ws::ws_handler))
+        .route("/ws/bot", get(ws::ws_bot_handler))
         .fallback(embed::serve_frontend)
         .layer(cors)
         .layer(TimeoutLayer::with_status_code(

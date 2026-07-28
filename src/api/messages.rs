@@ -50,9 +50,10 @@ struct BotConfig {
     api_key: String,
     system_prompt: String,
     model: String,
+    connection_mode: String,
 }
 
-type BotRow = (String, String, String, String, String, String, String, String);
+type BotRow = (String, String, String, String, String, String, String, String, String, String);
 
 // ---------------------------------------------------------------------------
 // Request / Response types
@@ -786,7 +787,7 @@ async fn spawn_bot_mentions(
 
     let bots: Vec<BotRow> =
         sqlx::query_as(
-            "SELECT b.id, b.user_id, b.name, b.display_name, b.api_url, b.api_key, b.system_prompt, b.model
+            "SELECT b.id, b.user_id, b.name, b.display_name, b.api_url, b.api_key, b.system_prompt, b.model, b.connection_mode, b.connection_key
              FROM bots b
              JOIN channel_members cm ON cm.user_id = b.user_id AND cm.channel_id = ?
              WHERE b.is_active = 1",
@@ -799,7 +800,7 @@ async fn spawn_bot_mentions(
     let pool = state.pool.clone();
     let ws_pool = state.ws_pool.clone();
 
-    for (bot_id, bot_user_id, bot_name, bot_display_name, api_url, api_key, system_prompt, model) in bots {
+    for (bot_id, bot_user_id, bot_name, bot_display_name, api_url, api_key, system_prompt, model, connection_mode, _connection_key) in bots {
         let mention_name = format!("@{}", bot_name.to_lowercase());
         let matches_name = content_text.contains(&mention_name);
         let matches_display = !bot_display_name.is_empty()
@@ -820,6 +821,85 @@ async fn spawn_bot_mentions(
         cd.insert(key, std::time::Instant::now());
         drop(cd);
 
+        // Connector mode: broadcast BotMention event via WS.
+        // If the bot is not connected (offline), post an offline notice instead.
+        if connection_mode == "connector" {
+            let is_online = ws_pool.is_user_online(&bot_user_id);
+            if !is_online {
+                let offline_text = format!("🤖 {} 当前离线，请在运行连接器的机器上检查连接状态", bot_name);
+                let msg_id = Uuid::new_v4().to_string();
+                let payload = serde_json::json!({"text": offline_text}).to_string();
+                let _ = sqlx::query(
+                    "INSERT INTO messages (msg_id, channel_id, sender_id, msg_type, payload)
+                     VALUES (?, ?, ?, 'text', ?)",
+                )
+                .bind(&msg_id)
+                .bind(channel_id)
+                .bind(&bot_user_id)
+                .bind(&payload)
+                .execute(&pool)
+                .await;
+                continue;
+            }
+
+            // Gather channel history for context.
+            let context_rows: Vec<(String, String, String, bool, Option<i64>)> = sqlx::query_as(
+                "SELECT m.sender_id, m.payload, u.username, u.is_bot, m.quoted_message_id
+                 FROM messages m JOIN users u ON m.sender_id = u.id
+                 WHERE m.channel_id = ? AND m.deleted_at IS NULL
+                 ORDER BY m.created_at ASC",
+            )
+            .bind(channel_id)
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default();
+
+            let messages: Vec<serde_json::Value> = context_rows
+                .into_iter()
+                .map(|(_sender_id, payload, username, is_bot, quoted_id)| {
+                    let role = if is_bot { "assistant" } else { "user" };
+                    let text = serde_json::from_str::<serde_json::Value>(&payload)
+                        .ok()
+                        .and_then(|v| v.get("text").and_then(|t| t.as_str()).map(String::from))
+                        .unwrap_or_default();
+                    let content = match quoted_id {
+                        Some(qid) => format!("{} (引用消息#{}): {}", username, qid, text),
+                        None => format!("{}: {}", username, text),
+                    };
+                    serde_json::json!({"role": role, "content": content})
+                })
+                .collect();
+
+            // Insert ack placeholder (same as HTTP mode).
+            let ack_text = format!("收到，{} 正在处理...", bot_name);
+            if let Some(ack_id) =
+                insert_bot_message(&pool, channel_id, &bot_user_id, &ack_text).await
+            {
+                ws_pool.notify_channel(
+                    channel_id,
+                    ServerEvent::NewMsg {
+                        channel_id: channel_id.to_string(),
+                        cursor: ack_id,
+                        sender_id: bot_user_id.clone(),
+                        msg_type: "text".to_string(),
+                        preview: ack_text,
+                        quoted_message_id: None,
+                    },
+                );
+            }
+
+            // Send BotMention via WS broadcast.
+            let mention_id = Uuid::new_v4().to_string();
+            let _ = ws_pool.global_tx.send(ServerEvent::BotMention {
+                mention_id,
+                channel_id: channel_id.to_string(),
+                messages,
+                model,
+                system_prompt,
+            });
+            continue;
+        }
+
         let bot = BotConfig {
             id: bot_id,
             user_id: bot_user_id,
@@ -829,6 +909,7 @@ async fn spawn_bot_mentions(
             api_key,
             system_prompt,
             model,
+            connection_mode,
         };
         let pool_clone = pool.clone();
         let ws_pool_clone = ws_pool.clone();
@@ -980,7 +1061,7 @@ async fn trigger_chain_mentions(
 
     let other_bots: Vec<BotRow> =
         sqlx::query_as(
-            "SELECT b.id, b.user_id, b.name, b.display_name, b.api_url, b.api_key, b.system_prompt, b.model
+            "SELECT b.id, b.user_id, b.name, b.display_name, b.api_url, b.api_key, b.system_prompt, b.model, b.connection_mode, b.connection_key
              FROM bots b
              JOIN channel_members cm ON cm.user_id = b.user_id AND cm.channel_id = ?
              WHERE b.is_active = 1 AND b.id != ?",
@@ -991,7 +1072,7 @@ async fn trigger_chain_mentions(
         .await
         .unwrap_or_default();
 
-    for (id, user_id, name, display_name, api_url, api_key, system_prompt, model) in other_bots {
+    for (id, user_id, name, display_name, api_url, api_key, system_prompt, model, connection_mode, _connection_key) in other_bots {
         let mention_name = format!("@{}", name.to_lowercase());
         let matches_name = segment_lower.contains(&mention_name);
         let matches_display = !display_name.is_empty()
@@ -1010,7 +1091,7 @@ async fn trigger_chain_mentions(
         cd.insert(key, std::time::Instant::now());
         drop(cd);
 
-        let other = BotConfig { id, user_id, name, display_name, api_url, api_key, system_prompt, model };
+        let other = BotConfig { id, user_id, name, display_name, api_url, api_key, system_prompt, model, connection_mode };
         Box::pin(trigger_bot_response(
             pool.clone(),
             ws_pool.clone(),
@@ -2003,6 +2084,7 @@ mod tests {
             api_key: String::new(),
             system_prompt: String::new(),
             model: "hermes".to_string(),
+            connection_mode: "http".to_string(),
         };
         trigger_bot_response(pool.clone(), ws_pool, bot, channel_id, BOT_MAX_CHAIN_DEPTH).await;
 

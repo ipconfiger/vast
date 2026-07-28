@@ -39,17 +39,29 @@ pub struct BotView {
     pub system_prompt: String,
     pub model: String,
     pub is_active: bool,
+    pub connection_mode: String,
     pub created_at: i64,
     /// `users.username` for the bot's user row (== `name`). Joined so the
     /// admin UI can render the owning principal without a second query.
     pub username: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct BotCreateResponse {
+    #[serde(flatten)]
+    pub bot: BotView,
+    /// The full connection_key — only returned on create, never on list/get.
+    pub connection_key: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateBotRequest {
     pub name: String,
     pub display_name: Option<String>,
-    pub api_url: String,
+    #[serde(default)]
+    pub connection_mode: Option<String>,
+    #[serde(default)]
+    pub api_url: Option<String>,
     pub api_key: Option<String>,
     pub system_prompt: Option<String>,
     pub model: Option<String>,
@@ -60,13 +72,14 @@ pub struct UpdateBotRequest {
     pub display_name: Option<String>,
     pub api_url: Option<String>,
     pub api_key: Option<String>,
+    pub connection_mode: Option<String>,
     pub system_prompt: Option<String>,
     pub model: Option<String>,
     pub is_active: Option<bool>,
 }
 
 const SQL_COLUMNS: &str = "b.id, b.user_id, b.name, b.display_name, b.api_url, \
-     b.system_prompt, b.model, b.is_active, b.created_at, u.username";
+     b.system_prompt, b.model, b.is_active, b.connection_mode, b.created_at, u.username";
 
 // ---------------------------------------------------------------------------
 // Handlers
@@ -80,17 +93,23 @@ pub async fn create_bot(
     _admin: AdminAuthenticatedUser,
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateBotRequest>,
-) -> Result<(axum::http::StatusCode, Json<BotView>), AppError> {
+) -> Result<(axum::http::StatusCode, Json<BotCreateResponse>), AppError> {
     let name = body.name.trim().to_string();
     if name.is_empty() || name.len() > 64 {
         return Err(AppError::BadRequest(
             "name must be 1-64 characters".to_string(),
         ));
     }
-    let api_url = body.api_url.trim().to_string();
-    if api_url.is_empty() {
+    let connection_mode = body.connection_mode.as_deref().unwrap_or("http").trim().to_string();
+    if connection_mode != "http" && connection_mode != "connector" {
         return Err(AppError::BadRequest(
-            "api_url must not be empty".to_string(),
+            "connection_mode must be 'http' or 'connector'".to_string(),
+        ));
+    }
+    let api_url = body.api_url.as_deref().unwrap_or("").trim().to_string();
+    if connection_mode == "http" && api_url.is_empty() {
+        return Err(AppError::BadRequest(
+            "api_url must not be empty for HTTP mode".to_string(),
         ));
     }
 
@@ -98,6 +117,12 @@ pub async fn create_bot(
     let api_key = body.api_key.as_deref().unwrap_or("").to_string();
     let system_prompt = body.system_prompt.as_deref().unwrap_or("").to_string();
     let model = body.model.as_deref().unwrap_or("hermes").trim().to_string();
+    // Generate connection_key for connector mode — returned once, never stored in views.
+    let connection_key = if connection_mode == "connector" {
+        Uuid::new_v4().to_string()
+    } else {
+        String::new()
+    };
 
     let user_id = Uuid::now_v7().to_string();
     let bot_id = Uuid::now_v7().to_string();
@@ -119,8 +144,8 @@ pub async fn create_bot(
 
     sqlx::query(
         "INSERT INTO bots \
-         (id, user_id, name, display_name, api_url, api_key, system_prompt, model, is_active, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+         (id, user_id, name, display_name, api_url, api_key, system_prompt, model, connection_mode, connection_key, is_active, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
     )
     .bind(&bot_id)
     .bind(&user_id)
@@ -130,6 +155,8 @@ pub async fn create_bot(
     .bind(&api_key)
     .bind(&system_prompt)
     .bind(&model)
+    .bind(&connection_mode)
+    .bind(&connection_key)
     .bind(now)
     .execute(&state.pool)
     .await?;
@@ -155,7 +182,16 @@ pub async fn create_bot(
     .fetch_one(&state.pool)
     .await?;
 
-    created_response(view)
+    let conn_key = if connection_mode == "connector" {
+        Some(connection_key)
+    } else {
+        None
+    };
+    let resp = BotCreateResponse {
+        bot: view,
+        connection_key: conn_key,
+    };
+    created_response(resp)
 }
 
 /// GET /api/admin/bots

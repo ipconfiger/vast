@@ -66,6 +66,7 @@ export interface Bot {
   system_prompt: string
   model: string
   is_active: boolean
+  connection_mode: string
   created_at: number
 }
 
@@ -325,11 +326,12 @@ export async function listBots(): Promise<Bot[]> {
 export async function createBot(body: {
   name: string
   display_name?: string
-  api_url: string
+  connection_mode?: string
+  api_url?: string
   api_key?: string
   system_prompt?: string
   model?: string
-}): Promise<Bot> {
+}): Promise<Bot & { connection_key?: string }> {
   return adminApiClient<Bot>('/bots', {
     method: 'POST',
     body: JSON.stringify(body),
@@ -342,6 +344,7 @@ export async function updateBot(
     display_name: string
     api_url: string
     api_key: string
+    connection_mode: string
     system_prompt: string
     model: string
     is_active: boolean

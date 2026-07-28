@@ -92,6 +92,14 @@ pub enum ServerEvent {
         participant_ids: Vec<String>,
     },
     Pong,
+    /// Push a mention context to a connected bot connector.
+    BotMention {
+        mention_id: String,
+        channel_id: String,
+        messages: Vec<serde_json::Value>,
+        model: String,
+        system_prompt: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,5 +124,11 @@ pub enum ClientEvent {
     },
     Unsubscribe {
         channel_id: String,
+    },
+    /// Bot connector sends this when the LLM has produced a reply.
+    BotReply {
+        mention_id: String,
+        channel_id: String,
+        text: String,
     },
 }
