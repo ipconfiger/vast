@@ -298,24 +298,20 @@ export function MessageBubble({
     const content = (() => {
       if (message.payload?._train) {
       return (
-        <div className={isOwn ? 'flex justify-end' : ''}>
           <TrainMessage
             trainId={message.payload.train_id}
             title={message.payload.title}
             channelId={message.channel_id}
           />
-        </div>
       )
     }
     if (message.payload?._vote) {
       return (
-        <div className={isOwn ? 'flex justify-end' : ''}>
           <VoteMessage
             voteId={message.payload.vote_id}
             title={message.payload.title}
             channelId={message.channel_id}
           />
-        </div>
       )
     }
     switch (message.msg_type) {
@@ -328,17 +324,15 @@ export function MessageBubble({
           if (message.payload?._owner_only && !isOwn) return null
           return <CommandResult text={message.payload.text} />
         }
-        return <TextMessage text={typeof message.payload === 'string' ? message.payload : message.payload?.text ?? ''} isOwn={isOwn} />
+        return <TextMessage text={typeof message.payload === 'string' ? message.payload : message.payload?.text ?? ''} />
       case 'file':
         return <FileMessage payload={message.payload} message={message} />
       case 'code':
         return (
-          <div className={`w-full sm:w-1/2 text-left ${isOwn ? 'ml-auto' : 'mr-auto'}`}>
             <CodeMessage language={message.payload?.language ?? 'plaintext'} code={message.payload?.code ?? ''} filename={message.payload?.filename} />
-          </div>
         )
       default:
-        return <TextMessage text={typeof message.payload === 'string' ? message.payload : JSON.stringify(message.payload)} isOwn={isOwn} />
+        return <TextMessage text={typeof message.payload === 'string' ? message.payload : JSON.stringify(message.payload)} />
     }
     })()
 
@@ -426,11 +420,15 @@ export function MessageBubble({
             <ReactionPicker messageId={message.id || message.msg_id} isOwn={isOwn} />
           </div>
         </div>
-        <div className={`mt-0.5 text-sm leading-relaxed ${isOwn ? 'text-right' : 'text-left'}`}>
-          {renderContent()}
-        </div>
-        <div className={isOwn ? 'flex justify-end' : ''}>
-          <ReactionBar messageId={message.id || message.msg_id} />
+        <div className={`mt-0.5 ${isOwn ? 'flex justify-end' : ''}`}>
+          <div className="w-fit max-w-[70%]">
+            <div className="text-sm leading-relaxed text-left">
+              {renderContent()}
+            </div>
+            <div className="flex justify-start">
+              <ReactionBar messageId={message.id || message.msg_id} />
+            </div>
+          </div>
         </div>
       </div>
     </div>

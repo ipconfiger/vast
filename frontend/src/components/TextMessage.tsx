@@ -4,7 +4,6 @@ import ChatMarkdown from './ChatMarkdown'
 
 interface TextMessageProps {
   text: string
-  isOwn?: boolean
 }
 
 function toRawUrl(url: string): string {
@@ -78,7 +77,7 @@ function RawContentPreview({ url }: { url: string }) {
   )
 }
 
-export function TextMessage({ text, isOwn = false }: TextMessageProps) {
+export function TextMessage({ text }: TextMessageProps) {
   const trimmed = text.trim()
   const isUrl = isRawUrl(trimmed)
 
@@ -93,7 +92,7 @@ export function TextMessage({ text, isOwn = false }: TextMessageProps) {
         return <ChatMarkdown key={i} text={part} />
       })}
       {isUrl && (
-        <div className={`w-full sm:w-1/2 text-left ${isOwn ? 'ml-auto' : 'mr-auto'}`}>
+        <div className="w-full max-w-full text-left">
           <RawContentPreview url={trimmed} />
         </div>
       )}
