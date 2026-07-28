@@ -64,6 +64,8 @@ pub struct SendMessageRequest {
     pub payload: serde_json::Value,
     #[serde(default)]
     pub thread_parent_id: Option<i64>,
+    #[serde(default)]
+    pub quoted_message_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,6 +89,7 @@ pub struct MessageRow {
     pub msg_type: String,
     pub payload: String,
     pub thread_parent_id: Option<i64>,
+    pub quoted_message_id: Option<i64>,
     pub deleted_at: Option<i64>,
     pub edited_at: Option<i64>,
     pub created_at: i64,
@@ -105,6 +108,7 @@ pub struct MessageResponse {
     pub msg_type: String,
     pub payload: serde_json::Value,
     pub thread_parent_id: Option<i64>,
+    pub quoted_message_id: Option<i64>,
     pub deleted_at: Option<i64>,
     pub edited_at: Option<i64>,
     pub created_at: i64,
@@ -137,6 +141,7 @@ impl From<MessageRow> for MessageResponse {
             msg_type: row.msg_type,
             payload,
             thread_parent_id: row.thread_parent_id,
+            quoted_message_id: row.quoted_message_id,
             deleted_at: row.deleted_at,
             edited_at: row.edited_at,
             created_at: row.created_at,
@@ -155,18 +160,30 @@ fn validate_msg_type(msg_type: &str) -> Result<(), AppError> {
 }
 
 fn extract_preview(payload: &serde_json::Value) -> String {
-    payload
-        .get("text")
-        .and_then(|v| v.as_str())
-        .map(|s| {
-            let s = s.trim();
-            if s.len() > 100 {
-                format!("{}...", &s[..100])
-            } else {
-                s.to_string()
-            }
-        })
-        .unwrap_or_default()
+    if let Some(text) = payload.get("text").and_then(|v| v.as_str()) {
+        let s = text.trim();
+        return if s.len() > 100 {
+            format!("{}...", &s[..100])
+        } else {
+            s.to_string()
+        };
+    }
+    if let Some(name) = payload.get("original_name").and_then(|v| v.as_str()) {
+        return format!("[文件] {name}");
+    }
+    if payload.get("code").and_then(|v| v.as_str()).is_some() {
+        let filename = payload.get("filename").and_then(|v| v.as_str()).unwrap_or("代码片段");
+        return format!("[代码] {filename}");
+    }
+    if payload.get("_train").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let title = payload.get("title").and_then(|v| v.as_str()).unwrap_or("接龙");
+        return format!("[接龙] {title}");
+    }
+    if payload.get("_vote").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let title = payload.get("title").and_then(|v| v.as_str()).unwrap_or("投票");
+        return format!("[投票] {title}");
+    }
+    String::new()
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +224,22 @@ pub async fn send_message(
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| AppError::Forbidden("You are not a member of this channel".to_string()))?;
+
+    // ── Validate quoted message ──────────────────────────────────────
+    if let Some(qid) = body.quoted_message_id {
+        let (q_channel,): (String,) = sqlx::query_as(
+            "SELECT channel_id FROM messages WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(qid)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Quoted message not found".into()))?;
+        if q_channel != channel_id {
+            return Err(AppError::BadRequest(
+                "Quoted message is in a different channel".into(),
+            ));
+        }
+    }
 
     // ── _vote_request: create vote record, rewrite payload, fall through ──
     if body.payload.get("_vote_request").and_then(|v| v.as_bool()).unwrap_or(false) {
@@ -308,7 +341,7 @@ pub async fn send_message(
                 "INSERT INTO messages (msg_id, channel_id, sender_id, msg_type, payload) \
                  VALUES (?, ?, ?, 'text', ?) \
                  RETURNING id, msg_id, channel_id, sender_id, msg_type, payload, \
-                           thread_parent_id, deleted_at, edited_at, created_at",
+                           thread_parent_id, quoted_message_id, deleted_at, edited_at, created_at",
             )
             .bind(&msg_id)
             .bind(&channel_id)
@@ -325,6 +358,7 @@ pub async fn send_message(
                     sender_id: user_id.clone(),
                     msg_type: "text".to_string(),
                     preview: String::new(),
+                    quoted_message_id: None,
                 },
             );
 
@@ -400,7 +434,7 @@ pub async fn send_message(
         let payload_str = serde_json::to_string(&payload).unwrap_or_default();
         let msg_id = Uuid::new_v4().to_string();
         let inserted: MessageRow = sqlx::query_as::<_, MessageRow>(
-            "INSERT INTO messages (msg_id, channel_id, sender_id, msg_type, payload) VALUES (?, ?, ?, 'text', ?) RETURNING id, msg_id, channel_id, sender_id, msg_type, payload, thread_parent_id, deleted_at, edited_at, created_at",
+            "INSERT INTO messages (msg_id, channel_id, sender_id, msg_type, payload) VALUES (?, ?, ?, 'text', ?) RETURNING id, msg_id, channel_id, sender_id, msg_type, payload, thread_parent_id, quoted_message_id, deleted_at, edited_at, created_at",
         )
         .bind(&msg_id).bind(&channel_id).bind(&user_id).bind(&payload_str)
         .fetch_one(&state.pool).await?;
@@ -428,10 +462,10 @@ pub async fn send_message(
 
     let inserted: MessageRow = sqlx::query_as::<_, MessageRow>(
         r#"
-        INSERT INTO messages (msg_id, channel_id, sender_id, msg_type, payload, thread_parent_id)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO messages (msg_id, channel_id, sender_id, msg_type, payload, thread_parent_id, quoted_message_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         RETURNING id, msg_id, channel_id, sender_id, msg_type, payload,
-                  thread_parent_id, deleted_at, edited_at, created_at
+                  thread_parent_id, quoted_message_id, deleted_at, edited_at, created_at
         "#,
     )
     .bind(&msg_id)
@@ -440,11 +474,13 @@ pub async fn send_message(
     .bind(&body.msg_type)
     .bind(&payload_str)
     .bind(body.thread_parent_id)
+    .bind(body.quoted_message_id)
     .fetch_one(&state.pool)
     .await?;
 
     let preview = extract_preview(&body.payload);
     let push_preview = preview.clone();
+    let quoted_id = body.quoted_message_id;
     if let Some(parent_id) = body.thread_parent_id {
         state.ws_pool.notify_channel(
             &channel_id,
@@ -454,6 +490,7 @@ pub async fn send_message(
                 cursor: inserted.id,
                 sender_id: user_id.clone(),
                 preview,
+                quoted_message_id: quoted_id,
             },
         );
     } else {
@@ -465,6 +502,7 @@ pub async fn send_message(
                 sender_id: user_id.clone(),
                 msg_type: body.msg_type.clone(),
                 preview,
+                quoted_message_id: quoted_id,
             },
         );
     }
@@ -516,7 +554,7 @@ pub async fn get_messages(
     let rows: Vec<MessageRow> = sqlx::query_as::<_, MessageRow>(
         r#"
         SELECT id, msg_id, channel_id, sender_id, msg_type, payload,
-               thread_parent_id, deleted_at, edited_at, created_at
+               thread_parent_id, quoted_message_id, deleted_at, edited_at, created_at
         FROM messages
         WHERE channel_id = ? AND id > ? AND deleted_at IS NULL
               AND thread_parent_id IS NULL
@@ -614,7 +652,7 @@ pub async fn get_thread(
     let rows: Vec<MessageRow> = sqlx::query_as::<_, MessageRow>(
         r#"
         SELECT id, msg_id, channel_id, sender_id, msg_type, payload,
-               thread_parent_id, deleted_at, edited_at, created_at
+               thread_parent_id, quoted_message_id, deleted_at, edited_at, created_at
         FROM messages
         WHERE channel_id = ? AND thread_parent_id = ? AND id > ? AND deleted_at IS NULL
         ORDER BY id ASC
@@ -819,8 +857,8 @@ async fn trigger_bot_response(
         return;
     }
 
-    let rows: Vec<(String, String, String, bool)> = sqlx::query_as(
-        "SELECT m.sender_id, m.payload, u.username, u.is_bot
+    let rows: Vec<(String, String, String, bool, Option<i64>)> = sqlx::query_as(
+        "SELECT m.sender_id, m.payload, u.username, u.is_bot, m.quoted_message_id
          FROM messages m JOIN users u ON m.sender_id = u.id
          WHERE m.channel_id = ? AND m.deleted_at IS NULL
          ORDER BY m.created_at ASC",
@@ -832,15 +870,19 @@ async fn trigger_bot_response(
 
     let messages: Vec<ChatMessage> = rows
         .into_iter()
-        .map(|(_sender_id, payload, username, is_bot)| {
+        .map(|(_sender_id, payload, username, is_bot, quoted_id)| {
             let role = if is_bot { "assistant" } else { "user" };
             let text = serde_json::from_str::<serde_json::Value>(&payload)
                 .ok()
                 .and_then(|v| v.get("text").and_then(|t| t.as_str()).map(String::from))
                 .unwrap_or_default();
+            let content = match quoted_id {
+                Some(qid) => format!("{} (引用消息#{}): {}", username, qid, text),
+                None => format!("{}: {}", username, text),
+            };
             ChatMessage {
                 role: role.to_string(),
-                content: format!("{}: {}", username, text),
+                content,
             }
         })
         .collect();
@@ -872,6 +914,7 @@ async fn trigger_bot_response(
                         sender_id: bot.user_id.clone(),
                         msg_type: "text".to_string(),
                         preview: segment.chars().take(100).collect(),
+                        quoted_message_id: None,
                     },
                 );
                 trigger_chain_mentions(&pool, &ws_pool, &channel_id, &bot.id, &segment, depth)
@@ -891,6 +934,7 @@ async fn trigger_bot_response(
                         sender_id: bot.user_id.clone(),
                         msg_type: "text".to_string(),
                         preview: error_text,
+                        quoted_message_id: None,
                     },
                 );
             }

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
+import type { Message } from '../types'
 import { useMessages } from '../api/channels'
 import { useMessageStore } from '../stores/messageStore'
 import { useAuthStore } from '../stores/authStore'
@@ -11,9 +12,10 @@ import { getUserDisplayName } from '../utils/user'
 
 interface MessageListProps {
   channelId: string
+  onQuote?: (message: Message) => void
 }
 
-export function MessageList({ channelId }: MessageListProps) {
+export function MessageList({ channelId, onQuote }: MessageListProps) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
   const prevMessageCountRef = useRef(0)
   const isAtBottomRef = useRef(true)
@@ -121,6 +123,7 @@ export function MessageList({ channelId }: MessageListProps) {
           }
           timestamp={dayjs(message.created_at).format('h:mm A')}
           channelId={channelId}
+          onQuote={onQuote}
         />
       )}
       atBottomStateChange={(atBottom) => {

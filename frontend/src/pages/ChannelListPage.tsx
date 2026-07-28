@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Settings, Loader2 } from 'lucide-react'
+import type { Message } from '../types'
 import { useParams, useNavigate, useLocation } from 'react-router'
 import { ChannelSettingsModal } from '../components/ChannelSettingsModal'
 import { ChannelSidebarToggle } from '../components/ChannelSidebar'
@@ -41,6 +42,7 @@ export function ChannelListPage() {
   const user = useAuthStore((s) => s.user)
   const isOwner = channel?.owner_id === user?.id
   const [showSettings, setShowSettings] = useState(false)
+  const [quotingMessage, setQuotingMessage] = useState<Message | null>(null)
 
   return (
     <div className="channel-page flex h-screen bg-zinc-950 text-zinc-100">
@@ -88,9 +90,9 @@ export function ChannelListPage() {
           ) : (
             <>
               <ChannelHeader channelId={channelId} />
-              <MessageList channelId={channelId} />
+              <MessageList channelId={channelId} onQuote={setQuotingMessage} />
               <TypingIndicator channelId={channelId} />
-              <MessageInput channelId={channelId} currentRole={channel?.role} />
+              <MessageInput channelId={channelId} currentRole={channel?.role} quotingMessage={quotingMessage} onCancelQuote={() => setQuotingMessage(null)} />
             </>
           )
         ) : (

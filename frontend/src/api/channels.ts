@@ -139,7 +139,7 @@ export function useSendMessage(channelId: string) {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (data: { msg_type: string; payload: unknown; thread_parent_id?: string | null }) =>
+    mutationFn: (data: { msg_type: string; payload: unknown; thread_parent_id?: string | null; quoted_message_id?: number | null }) =>
       apiClient<Message>(`/channels/${channelId}/messages`, {
         method: 'POST',
         body: JSON.stringify(data),

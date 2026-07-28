@@ -218,7 +218,7 @@ pub async fn cast_vote(
         "INSERT INTO messages (msg_id, channel_id, sender_id, msg_type, payload) \
          VALUES (?, ?, ?, 'text', ?) \
          RETURNING id, msg_id, channel_id, sender_id, msg_type, payload, \
-                   thread_parent_id, deleted_at, edited_at, created_at",
+                   thread_parent_id, quoted_message_id, deleted_at, edited_at, created_at",
     )
     .bind(&msg_id)
     .bind(&vote.channel_id)
@@ -240,6 +240,7 @@ pub async fn cast_vote(
             sender_id: user_id.clone(),
             msg_type: "text".to_string(),
             preview: String::new(),
+            quoted_message_id: None,
         },
     );
     state.ws_pool.notify_channel(

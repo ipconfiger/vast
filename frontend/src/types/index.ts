@@ -41,6 +41,7 @@ export interface Message {
   msg_type: string
   payload: any
   thread_parent_id?: string | null
+  quoted_message_id?: number | null
   deleted_at?: string | null
   created_at: string
 }

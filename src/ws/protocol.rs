@@ -10,6 +10,7 @@ pub enum ServerEvent {
         sender_id: String,
         msg_type: String,
         preview: String,
+        quoted_message_id: Option<i64>,
     },
     MsgUpdated {
         channel_id: String,
@@ -33,6 +34,7 @@ pub enum ServerEvent {
         cursor: i64,
         sender_id: String,
         preview: String,
+        quoted_message_id: Option<i64>,
     },
     Typing {
         channel_id: String,

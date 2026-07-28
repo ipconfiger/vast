@@ -611,6 +611,7 @@ mod tests {
                 sender_id: "sender".into(),
                 msg_type: "text".into(),
                 preview: "hello".into(),
+                quoted_message_id: None,
             },
         );
 
@@ -635,6 +636,7 @@ mod tests {
                 sender_id: "sender-1".into(),
                 msg_type: "text".into(),
                 preview: "hello".into(),
+                quoted_message_id: None,
             },
         );
         assert_eq!(n, 0);

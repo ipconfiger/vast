@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo, type KeyboardEvent } from 'react'
-import { Send, Loader2, Code2, Paperclip, Bot } from 'lucide-react'
+import type { Message } from '../types'
+import { Send, Loader2, Code2, Paperclip, Bot, X } from 'lucide-react'
 import { useSendMessage, usePublicBots } from '../api/channels'
 import { useUploadFile } from '../api/files'
 import { useChannelMembers, type MemberResponse } from '../api/channels'
@@ -27,9 +28,11 @@ function hasRole(userRole: string | undefined, required: CmdRole): boolean {
 interface MessageInputProps {
   channelId: string
   currentRole?: string
+  quotingMessage?: Message | null
+  onCancelQuote?: () => void
 }
 
-export function MessageInput({ channelId, currentRole }: MessageInputProps) {
+export function MessageInput({ channelId, currentRole, quotingMessage, onCancelQuote }: MessageInputProps) {
   const [text, setText] = useState('')
   const [showCodeInput, setShowCodeInput] = useState(false)
   const [voteModalOpen, setVoteModalOpen] = useState(false)
@@ -81,11 +84,14 @@ export function MessageInput({ channelId, currentRole }: MessageInputProps) {
         return
       }
 
-      sendMessage.mutate({ msg_type: 'text', payload: { _command: true, command: cmd, args } })
+      const quoteId = quotingMessage?.id != null ? Number(quotingMessage.id) : undefined
+      sendMessage.mutate({ msg_type: 'text', payload: { _command: true, command: cmd, args }, quoted_message_id: quoteId })
     } else {
-      sendMessage.mutate({ msg_type: 'text', payload: { text: trimmed } })
+      const quoteId = quotingMessage?.id != null ? Number(quotingMessage.id) : undefined
+      sendMessage.mutate({ msg_type: 'text', payload: { text: trimmed }, quoted_message_id: quoteId })
     }
     setText('')
+    onCancelQuote?.()
 
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
@@ -320,7 +326,28 @@ export function MessageInput({ channelId, currentRole }: MessageInputProps) {
         className="hidden"
         aria-label="Attach file"
       />
-      <div className="message-input border-t border-zinc-800 bg-zinc-900/80 px-4 py-3">
+      {quotingMessage && (
+        <div className="border-t border-zinc-800 bg-zinc-900/80 px-4 py-1.5">
+          <div className="flex items-center gap-2 rounded-t-lg border-x border-t border-zinc-700 bg-zinc-800/60 px-3 py-1.5">
+            <span className="text-xs text-zinc-400 font-medium flex-shrink-0">
+              引用 @{quotingMessage.sender_display_name || quotingMessage.sender_name || 'unknown'}
+            </span>
+            <span className="text-xs text-zinc-500 truncate flex-1">
+              {typeof quotingMessage.payload === 'string'
+                ? quotingMessage.payload.slice(0, 50)
+                : quotingMessage.payload?.text?.slice(0, 50) ?? ''}
+            </span>
+            <button
+              onClick={onCancelQuote}
+              className="flex-shrink-0 rounded p-0.5 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700"
+              aria-label="Cancel quote"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+      <div className={`message-input ${quotingMessage ? 'border-t-0' : 'border-t'} border-zinc-800 bg-zinc-900/80 px-4 py-3`}>
         <div className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 focus-within:border-zinc-500 transition-colors relative">
           <button
             onClick={() => setShowCodeInput(true)}
@@ -411,7 +438,10 @@ export function MessageInput({ channelId, currentRole }: MessageInputProps) {
             onKeyDown={handleKeyDown}
             onKeyUp={handleKeyUp}
             onClick={handleTextareaClick}
-            placeholder={`Message #${channelId.slice(0, 8)}...`}
+            placeholder={quotingMessage
+              ? `回复 @${quotingMessage.sender_display_name || quotingMessage.sender_name || 'unknown'}...`
+              : `Message #${channelId.slice(0, 8)}...`
+            }
             rows={1}
             className="flex-1 resize-none bg-transparent text-sm text-zinc-100 placeholder-zinc-500 outline-none"
           />

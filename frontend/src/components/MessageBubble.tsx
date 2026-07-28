@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo } from 'react'
 import type { Message } from '../types'
-import { FileText, Download, Check, X, UserPlus, Loader2, Bot, Trash2 } from 'lucide-react'
+import { FileText, Download, Check, X, UserPlus, Loader2, Bot, Trash2, Reply } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../api/client'
 import { useDeleteFile } from '../api/files'
 import { useAuthStore } from '../stores/authStore'
+import { useMessageStore } from '../stores/messageStore'
 import { useAuthImage } from '../hooks/useAuthImage'
 import { TextMessage } from './TextMessage'
 import { CodeMessage } from './CodeMessage'
@@ -243,6 +244,7 @@ interface MessageBubbleProps {
   senderAvatar?: string
   timestamp: string
   channelId: string
+  onQuote?: (message: Message) => void
 }
 
 export function MessageBubble({
@@ -252,6 +254,7 @@ export function MessageBubble({
   senderAvatar,
   timestamp,
   channelId,
+  onQuote,
 }: MessageBubbleProps) {
   const isBotMsg = message.is_bot === true && !isOwn
   const currentUsername = useAuthStore((s) => s.user?.username)
@@ -274,8 +277,26 @@ export function MessageBubble({
     }
   }, [isMentioned])
 
+  // Look up the quoted message from the message store
+  const quotedMessage = useMessageStore((s) => {
+    if (!message.quoted_message_id) return null
+    const msgs = s.messagesByChannel.get(message.channel_id)
+    return msgs?.find(m => Number(m.id) === message.quoted_message_id) ?? null
+  })
+
+  const getQuotedPreview = (msg: Message): string => {
+    const payload = msg.payload
+    if (payload?._train) return `[接龙] ${payload.title ?? ''}`
+    if (payload?._vote) return `[投票] ${payload.title ?? ''}`
+    if (msg.msg_type === 'file') return `[文件] ${payload?.original_name ?? '未知文件'}`
+    if (msg.msg_type === 'code') return `[代码] ${payload?.filename ?? '代码片段'}`
+    const text = typeof payload === 'string' ? payload : payload?.text ?? ''
+    return text.length > 80 ? text.slice(0, 80) + '...' : text
+  }
+
   const renderContent = () => {
-    if (message.payload?._train) {
+    const content = (() => {
+      if (message.payload?._train) {
       return (
         <div className={isOwn ? 'flex justify-end' : ''}>
           <TrainMessage
@@ -319,6 +340,39 @@ export function MessageBubble({
       default:
         return <TextMessage text={typeof message.payload === 'string' ? message.payload : JSON.stringify(message.payload)} isOwn={isOwn} />
     }
+    })()
+
+    return (
+      <>
+        {message.quoted_message_id != null && (
+          <div className={`mb-1 text-sm ${isOwn ? 'mr-0' : ''}`}>
+            {quotedMessage ? (
+              <div className={`inline-flex items-center gap-2 rounded border-l-2 px-3 py-1.5 max-w-md ${
+                quotedMessage.deleted_at
+                  ? 'border-zinc-600 bg-zinc-800/30 text-zinc-500 italic'
+                  : 'border-indigo-600 bg-zinc-800/50 text-zinc-400'
+              }`}>
+                {quotedMessage.deleted_at ? (
+                  <span>原消息已删除</span>
+                ) : (
+                  <>
+                    <span className="font-medium text-zinc-300 flex-shrink-0">
+                      @{quotedMessage.sender_display_name || quotedMessage.sender_name || 'unknown'}
+                    </span>
+                    <span className="truncate">
+                      {getQuotedPreview(quotedMessage)}
+                    </span>
+                  </>
+                )}
+              </div>
+            ) : (
+              <span className="text-zinc-600 italic text-xs">原消息不可用</span>
+            )}
+          </div>
+        )}
+        {content}
+      </>
+    )
   }
 
   return (
@@ -359,7 +413,16 @@ export function MessageBubble({
               {timestamp}
             </span>
           </div>
-          <div className="ml-auto flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+          <div className="ml-auto flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
+            {onQuote && (
+              <button
+                onClick={() => onQuote(message)}
+                className="rounded-md p-1 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 transition-colors"
+                aria-label="Quote message"
+              >
+                <Reply className="h-3.5 w-3.5" />
+              </button>
+            )}
             <ReactionPicker messageId={message.id || message.msg_id} isOwn={isOwn} />
           </div>
         </div>
