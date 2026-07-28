@@ -1,0 +1,55 @@
+# VAST Bot Connector — systemd service
+# =============================================================================
+# 1. Copy this file to /etc/systemd/system/
+#      sudo cp bot-connector.service /etc/systemd/system/
+#
+# 2. Adjust the User, WorkingDirectory, and ExecStart paths below.
+#
+# 3. Enable and start:
+#      sudo systemctl daemon-reload
+#      sudo systemctl enable --now vast-bot-connector
+#
+# 4. Check status:
+#      sudo systemctl status vast-bot-connector
+#      sudo journalctl -u vast-bot-connector -f
+# =============================================================================
+
+[Unit]
+Description=VAST Bot Connector
+Documentation=https://github.com/ipconfiger/vast
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Run as a non-root user (create one if needed).
+User=vast
+Group=vast
+
+# Working directory must contain bot-connector.py and bot-connector.yaml.
+WorkingDirectory=/opt/vast/tools
+
+# Start the connector.
+# Make sure websockets, httpx, and pyyaml are installed for the target user:
+#   pip install --user websockets httpx pyyaml
+ExecStart=/usr/bin/python3 /opt/vast/tools/bot-connector.py --config /opt/vast/tools/bot-connector.yaml
+
+# Restart on failure with a 5-second delay.
+Restart=always
+RestartSec=5
+
+# Security hardening.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/vast/tools
+
+# Logging.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vast-bot-connector
+
+[Install]
+WantedBy=multi-user.target
