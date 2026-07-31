@@ -135,6 +135,9 @@ pub async fn create_channel(
         .execute(&state.pool)
         .await?;
 
+    // Keep the WS membership cache in sync (C3 isolation).
+    state.ws_pool.add_user_channel(&user.0, &channel_id);
+
     let channel = sqlx::query_as::<_, Channel>(
         "SELECT id, name, description, owner_id, is_direct, is_group_dm, is_archived, created_at FROM channels WHERE id = ?",
     )
@@ -780,6 +783,9 @@ pub async fn add_bot_to_channel(
     .bind(now)
     .execute(&state.pool)
     .await?;
+
+    // Keep the WS membership cache in sync (C3 isolation).
+    state.ws_pool.add_user_channel(&bot_user_id, &channel_id);
 
     state.ws_pool.notify_channel(
         &channel_id,

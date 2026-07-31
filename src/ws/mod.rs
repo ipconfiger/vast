@@ -63,6 +63,11 @@ pub struct ConnectionPool {
     connections: DashMap<ConnectionId, ConnectionMeta>,
     pub(crate) global_tx: broadcast::Sender<ServerEvent>,
     typing_timeouts: DashMap<String, Instant>,
+    /// In-memory cache of each connected user's channel memberships, used
+    /// for receiver-side event filtering (C3 cross-channel isolation).
+    /// Loaded from the DB on connect via `init_user_channels` and kept in
+    /// sync incrementally as memberships change.
+    user_channels: DashMap<UserId, DashSet<ChannelId>>,
 }
 
 impl Default for ConnectionPool {
@@ -79,6 +84,7 @@ impl ConnectionPool {
             connections: DashMap::new(),
             global_tx,
             typing_timeouts: DashMap::new(),
+            user_channels: DashMap::new(),
         }
     }
 
@@ -131,6 +137,12 @@ impl ConnectionPool {
         let _ = self.global_tx.send(presence);
 
         debug!(user_id, connection_id, "Unregistered WebSocket connection");
+
+        // Drop the in-memory channel-membership cache once the user has no
+        // remaining connections (it is reloaded fresh on the next connect).
+        if !self.is_user_online(user_id) {
+            self.user_channels.remove(user_id);
+        }
     }
 
     /// Fan-out a ServerEvent via the global broadcast channel.
@@ -205,6 +217,53 @@ impl ConnectionPool {
             .is_some_and(|entry| !entry.is_empty())
     }
 
+    // ── Channel-membership cache (C3 isolation) ─────────────────────
+
+    /// Load (merge) the given user's channel memberships from the DB into
+    /// the in-memory cache. Called once when a user connects. Only inserts
+    /// new entries — never overwrites the existing set, so concurrent
+    /// incremental updates are preserved.
+    pub async fn init_user_channels(&self, pool: &sqlx::SqlitePool, user_id: &str) {
+        let channel_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT channel_id FROM channel_members WHERE user_id = ?",
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_else(|e| {
+            warn!(%e, user_id, "Failed to load user channels from DB");
+            Vec::new()
+        });
+
+        let set = self.user_channels.entry(user_id.to_string()).or_default();
+        for ch in channel_ids {
+            set.insert(ch);
+        }
+    }
+
+    /// Return true if `user_id` is cached as a member of `channel_id`.
+    /// Two hash lookups; no DB access.
+    pub fn is_channel_member(&self, user_id: &str, channel_id: &str) -> bool {
+        self.user_channels
+            .get(user_id)
+            .is_some_and(|set| set.contains(channel_id))
+    }
+
+    /// Record that `user_id` is now a member of `channel_id`.
+    pub fn add_user_channel(&self, user_id: &str, channel_id: &str) {
+        self.user_channels
+            .entry(user_id.to_string())
+            .or_default()
+            .insert(channel_id.to_string());
+    }
+
+    /// Record that `user_id` is no longer a member of `channel_id`.
+    pub fn remove_user_channel(&self, user_id: &str, channel_id: &str) {
+        if let Some(set) = self.user_channels.get(user_id) {
+            set.remove(channel_id);
+        }
+    }
+
     /// Register a bot connection (same internal bookkeeping as user connections).
     pub fn register_bot(&self, bot_user_id: &str, connection_id: &str) -> broadcast::Receiver<ServerEvent> {
         self.register(bot_user_id, connection_id)
@@ -269,7 +328,9 @@ pub async fn ws_handler(
     let user_id = claims.sub;
     info!(user_id, "WebSocket upgrade requested");
 
-    ws.on_upgrade(move |socket| handle_socket(socket, user_id, state.ws_pool.clone()))
+    let ws_pool = state.ws_pool.clone();
+    let db_pool = state.pool.clone();
+    ws.on_upgrade(move |socket| handle_socket(socket, user_id, ws_pool, db_pool))
 }
 
 // ---------------------------------------------------------------------------
@@ -423,6 +484,12 @@ async fn handle_bot_socket(
             broadcast_msg = broadcast_rx.recv() => {
                 match broadcast_msg {
                     Ok(event) => {
+                        // Only deliver a BotMention to the bot it targets;
+                        // other connected bots must drop it to avoid a reply
+                        // storm where every bot replies to every mention.
+                        if !should_deliver_to_bot(&event, &bot_user_id) {
+                            continue;
+                        }
                         // Forward BotMention events to this specific bot.
                         if let ServerEvent::BotMention { mention_id, .. } = &event {
                             pending_mention = Some(mention_id.clone());
@@ -472,12 +539,21 @@ async fn handle_bot_socket(
 /// 2. Global broadcast channel — push ServerEvent fan-out to the client.
 /// 3. Heartbeat timer — send periodic Ping frames (15 s interval,
 ///    60 s idle timeout).
-#[instrument(skip(socket, pool))]
-async fn handle_socket(mut socket: WebSocket, user_id: UserId, pool: Arc<ConnectionPool>) {
+#[instrument(skip(socket, pool, db_pool))]
+async fn handle_socket(
+    mut socket: WebSocket,
+    user_id: UserId,
+    pool: Arc<ConnectionPool>,
+    db_pool: sqlx::SqlitePool,
+) {
     let connection_id = Uuid::new_v4().to_string();
     info!(user_id, connection_id, "WebSocket connection opened");
 
     let mut broadcast_rx = pool.register(&user_id, &connection_id);
+    // Prime the channel-membership cache from the DB before processing any
+    // broadcast events so receiver-side filtering (C3) is correct from the
+    // very first event.
+    pool.init_user_channels(&db_pool, &user_id).await;
     let mut last_heartbeat = Instant::now();
 
     loop {
@@ -550,6 +626,19 @@ async fn handle_socket(mut socket: WebSocket, user_id: UserId, pool: Arc<Connect
             event = broadcast_rx.recv() => {
                 match event {
                     Ok(event) => {
+                        // BotMention carries a bot's system_prompt, model, and
+                        // the channel message history. It is intended solely
+                        // for bot WebSocket connections and must never be
+                        // forwarded to user clients (privacy leak).
+                        if matches!(event, ServerEvent::BotMention { .. }) {
+                            continue;
+                        }
+                        // C3: receiver-side channel isolation. Drop any
+                        // channel-scoped event the user is not a member of,
+                        // and DM events they are not a participant of.
+                        if !should_deliver(&event, &user_id, &pool) {
+                            continue;
+                        }
                         // Exclude sender from receiving their own
                         // typing indicator.
                         let is_self_typing = match &event {
@@ -608,6 +697,40 @@ async fn handle_socket(mut socket: WebSocket, user_id: UserId, pool: Arc<Connect
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Decide whether a broadcast `event` should be delivered to the bot
+/// connection identified by `bot_user_id`. A `BotMention` targets a single
+/// bot and must not fan out to other connected bots (prevents reply storms);
+/// all other event types are delivered to every bot connection.
+fn should_deliver_to_bot(event: &ServerEvent, bot_user_id: &str) -> bool {
+    match event {
+        ServerEvent::BotMention { bot_user_id: target, .. } => target == bot_user_id,
+        _ => true,
+    }
+}
+
+/// Decide whether a broadcast `event` should be delivered to the user
+/// connection identified by `user_id` (C3 cross-channel isolation).
+///
+/// * Channel-scoped content events (`channel_id()` is `Some`) are dropped
+///   unless the user is a cached member of that channel.
+/// * DM events are delivered only to their participants.
+/// * Everything else (presence, management, errors) is delivered.
+fn should_deliver(event: &ServerEvent, user_id: &str, pool: &ConnectionPool) -> bool {
+    if let Some(ch) = event.channel_id()
+        && !pool.is_channel_member(user_id, ch)
+    {
+        return false;
+    }
+    match event {
+        ServerEvent::DmCreated { participant_ids, .. }
+        | ServerEvent::DmClosed { participant_ids, .. } => {
+            return participant_ids.contains(&user_id.to_string());
+        }
+        _ => {}
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -626,6 +749,130 @@ mod tests {
         assert!(pool.typing_timeouts.is_empty());
         // Global channel exists but has no subscribers yet.
         assert_eq!(pool.global_tx.receiver_count(), 0);
+    }
+
+    // ── Bot mention targeting (C2: no reply storm) ──────────────────
+
+    #[test]
+    fn bot_mention_delivered_only_to_target_bot() {
+        let mention = ServerEvent::BotMention {
+            bot_user_id: "bot-a".to_string(),
+            mention_id: "m1".to_string(),
+            channel_id: "c1".to_string(),
+            messages: vec![],
+            model: "gpt-4o-mini".to_string(),
+            system_prompt: "p".to_string(),
+        };
+        // Target bot receives it.
+        assert!(should_deliver_to_bot(&mention, "bot-a"));
+        // Any other connected bot must not.
+        assert!(!should_deliver_to_bot(&mention, "bot-b"));
+    }
+
+    #[test]
+    fn non_mention_events_delivered_to_all_bots() {
+        // Pong (and other non-targeted events) go to every bot connection.
+        assert!(should_deliver_to_bot(&ServerEvent::Pong, "bot-a"));
+        assert!(should_deliver_to_bot(&ServerEvent::Pong, "bot-b"));
+    }
+
+    // ── Channel-membership cache (C3: cross-channel isolation) ───────
+
+    #[test]
+    fn is_channel_member_reflects_add_and_remove() {
+        let pool = make_pool();
+        assert!(!pool.is_channel_member("user-a", "ch-1"));
+        pool.add_user_channel("user-a", "ch-1");
+        assert!(pool.is_channel_member("user-a", "ch-1"));
+        // A different channel for the same user is unaffected.
+        assert!(!pool.is_channel_member("user-a", "ch-2"));
+        pool.remove_user_channel("user-a", "ch-1");
+        assert!(!pool.is_channel_member("user-a", "ch-1"));
+    }
+
+    #[test]
+    fn should_deliver_filters_non_member_content_events() {
+        let pool = make_pool();
+        let event = ServerEvent::NewMsg {
+            channel_id: "ch-1".into(),
+            cursor: 1,
+            sender_id: "sender".into(),
+            msg_type: "text".into(),
+            preview: "hi".into(),
+            quoted_message_id: None,
+        };
+        // Non-member is filtered out.
+        assert!(!should_deliver(&event, "user-a", &pool));
+        // Member passes.
+        pool.add_user_channel("user-a", "ch-1");
+        assert!(should_deliver(&event, "user-a", &pool));
+    }
+
+    #[test]
+    fn should_deliver_passes_non_channel_events() {
+        let pool = make_pool();
+        assert!(should_deliver(&ServerEvent::Pong, "user-a", &pool));
+        assert!(should_deliver(
+            &ServerEvent::Presence {
+                user_id: "u".into(),
+                status: "online".into(),
+            },
+            "user-a",
+            &pool
+        ));
+        assert!(should_deliver(
+            &ServerEvent::MemberAdded {
+                channel_id: "ch-1".into(),
+                user_id: "u".into(),
+                username: "n".into(),
+            },
+            "user-a",
+            &pool
+        ));
+    }
+
+    #[test]
+    fn should_deliver_filters_dm_non_participant() {
+        let pool = make_pool();
+        let participants = vec!["u1".to_string(), "u2".to_string()];
+
+        let created = ServerEvent::DmCreated {
+            dm_channel_id: "d1".into(),
+            participant_ids: participants.clone(),
+        };
+        assert!(!should_deliver(&created, "u3", &pool));
+        assert!(should_deliver(&created, "u1", &pool));
+
+        let closed = ServerEvent::DmClosed {
+            dm_channel_id: "d1".into(),
+            participant_ids: participants,
+        };
+        assert!(!should_deliver(&closed, "u3", &pool));
+        assert!(should_deliver(&closed, "u2", &pool));
+    }
+
+    #[test]
+    fn unregister_clears_user_channels_on_last_connection() {
+        let pool = make_pool();
+        let _rx = pool.register("user-a", "conn-1");
+        pool.add_user_channel("user-a", "ch-1");
+        assert!(pool.is_channel_member("user-a", "ch-1"));
+
+        pool.unregister("user-a", "conn-1");
+        // Cache cleared once the user has no remaining connections.
+        assert!(!pool.is_channel_member("user-a", "ch-1"));
+    }
+
+    #[test]
+    fn unregister_keeps_channels_with_other_connections() {
+        let pool = make_pool();
+        let _rx1 = pool.register("user-a", "conn-1");
+        let _rx2 = pool.register("user-a", "conn-2");
+        pool.add_user_channel("user-a", "ch-1");
+
+        pool.unregister("user-a", "conn-1");
+        // Still online via conn-2 — cache must be retained.
+        assert!(pool.is_channel_member("user-a", "ch-1"));
     }
 
     // ── Register ─────────────────────────────────────────────────────

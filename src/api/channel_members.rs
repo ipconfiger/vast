@@ -96,6 +96,9 @@ async fn add_member(
     .execute(&state.pool)
     .await?;
 
+    // Keep the WS membership cache in sync (C3 isolation).
+    state.ws_pool.add_user_channel(&body.user_id, &channel_id);
+
     created_response(serde_json::json!({"status": "ok"}))
 }
 
@@ -125,6 +128,8 @@ async fn remove_member(
                 .bind(&target_user_id)
                 .execute(&state.pool)
                 .await?;
+                // Keep the WS membership cache in sync (C3 isolation).
+                state.ws_pool.remove_user_channel(&target_user_id, &channel_id);
                 no_content()
             }
             None => Err(AppError::NotFound("Member not found".to_string())),
@@ -152,6 +157,8 @@ async fn remove_member(
                 .bind(&target_user_id)
                 .execute(&state.pool)
                 .await?;
+            // Keep the WS membership cache in sync (C3 isolation).
+            state.ws_pool.remove_user_channel(&target_user_id, &channel_id);
             no_content()
         }
     }

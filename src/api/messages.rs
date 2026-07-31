@@ -163,8 +163,8 @@ fn validate_msg_type(msg_type: &str) -> Result<(), AppError> {
 fn extract_preview(payload: &serde_json::Value) -> String {
     if let Some(text) = payload.get("text").and_then(|v| v.as_str()) {
         let s = text.trim();
-        return if s.len() > 100 {
-            format!("{}...", &s[..100])
+        return if s.chars().count() > 100 {
+            format!("{}...", s.chars().take(100).collect::<String>())
         } else {
             s.to_string()
         };
@@ -423,6 +423,8 @@ pub async fn send_message(
                             sqlx::query("DELETE FROM channel_members WHERE channel_id = ? AND user_id = ?")
                                 .bind(&channel_id).bind(&tid).execute(&state.pool).await?;
                             state.ws_pool.notify_channel(&channel_id, ServerEvent::MemberRemoved { channel_id: channel_id.clone(), user_id: tid.clone() });
+                            // Keep the WS membership cache in sync (C3 isolation).
+                            state.ws_pool.remove_user_channel(&tid, &channel_id);
                             Ok(serde_json::json!({"_command_result": true, "text": format!("Kicked @{}.", args.trim())}))
                         }
                     }
@@ -842,17 +844,20 @@ async fn spawn_bot_mentions(
                 continue;
             }
 
-            // Gather channel history for context.
-            let context_rows: Vec<(String, String, String, bool, Option<i64>)> = sqlx::query_as(
+            // Gather channel history for context. Limit to the most recent 50
+            // messages (DESC) then reverse to restore chronological order, so a
+            // long channel can't OOM the process or blow past WS frame limits.
+            let mut context_rows: Vec<(String, String, String, bool, Option<i64>)> = sqlx::query_as(
                 "SELECT m.sender_id, m.payload, u.username, u.is_bot, m.quoted_message_id
                  FROM messages m JOIN users u ON m.sender_id = u.id
                  WHERE m.channel_id = ? AND m.deleted_at IS NULL
-                 ORDER BY m.created_at ASC",
+                 ORDER BY m.created_at DESC LIMIT 50",
             )
             .bind(channel_id)
             .fetch_all(&pool)
             .await
             .unwrap_or_default();
+            context_rows.reverse();
 
             let messages: Vec<serde_json::Value> = context_rows
                 .into_iter()
@@ -891,6 +896,7 @@ async fn spawn_bot_mentions(
             // Send BotMention via WS broadcast.
             let mention_id = Uuid::new_v4().to_string();
             let _ = ws_pool.global_tx.send(ServerEvent::BotMention {
+                bot_user_id: bot_user_id.clone(),
                 mention_id,
                 channel_id: channel_id.to_string(),
                 messages,
@@ -938,16 +944,19 @@ async fn trigger_bot_response(
         return;
     }
 
-    let rows: Vec<(String, String, String, bool, Option<i64>)> = sqlx::query_as(
+    // Limit to the most recent 50 messages (DESC) then reverse to restore
+    // chronological order; see spawn_bot_mentions for the same rationale.
+    let mut rows: Vec<(String, String, String, bool, Option<i64>)> = sqlx::query_as(
         "SELECT m.sender_id, m.payload, u.username, u.is_bot, m.quoted_message_id
          FROM messages m JOIN users u ON m.sender_id = u.id
          WHERE m.channel_id = ? AND m.deleted_at IS NULL
-         ORDER BY m.created_at ASC",
+         ORDER BY m.created_at DESC LIMIT 50",
     )
     .bind(&channel_id)
     .fetch_all(&pool)
     .await
     .unwrap_or_default();
+    rows.reverse();
 
     let messages: Vec<ChatMessage> = rows
         .into_iter()
@@ -1286,6 +1295,22 @@ mod tests {
         };
 
         app.oneshot(req).await.unwrap()
+    }
+
+    #[test]
+    fn extract_preview_truncates_multibyte_text_safely() {
+        // 120 Chinese chars: the previous byte slice `&s[..100]` panicked
+        // because byte 100 landed inside a 3-byte char boundary. Truncation
+        // must operate on chars, not bytes.
+        let long = "你".repeat(120);
+        let preview = extract_preview(&json!({ "text": long }));
+        assert!(preview.ends_with("..."));
+        assert_eq!(preview.trim_end_matches("...").chars().count(), 100);
+    }
+
+    #[test]
+    fn extract_preview_keeps_short_text_intact() {
+        assert_eq!(extract_preview(&json!({ "text": "hello" })), "hello");
     }
 
     /// Helper to create a channel via API and return its id.

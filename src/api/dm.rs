@@ -175,6 +175,9 @@ pub async fn create_dm(
         .bind(uid)
         .execute(&state.pool)
         .await?;
+
+        // Keep the WS membership cache in sync (C3 isolation).
+        state.ws_pool.add_user_channel(uid, &channel_id);
     }
 
     // Broadcast DmCreated event to all connected WebSocket clients
@@ -267,6 +270,9 @@ pub async fn close_dm(
             participant_ids: participant_ids.clone(),
         },
     );
+
+    // Keep the WS membership cache in sync (C3 isolation).
+    state.ws_pool.remove_user_channel(&user.0, &dm_id);
 
     Ok(StatusCode::OK)
 }

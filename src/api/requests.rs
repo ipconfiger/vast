@@ -228,6 +228,9 @@ pub async fn approve_join_request(
     .execute(&state.pool)
     .await?;
 
+    // Keep the WS membership cache in sync (C3 isolation).
+    state.ws_pool.add_user_channel(&requester_id, &channel_id);
+
     let approved_username = sqlx::query_scalar::<_, String>("SELECT username FROM users WHERE id = ?")
         .bind(&requester_id).fetch_one(&state.pool).await.unwrap_or_else(|_| "Unknown".to_string());
 

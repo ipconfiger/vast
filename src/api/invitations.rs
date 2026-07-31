@@ -217,6 +217,9 @@ pub async fn accept_invitation(
     .execute(&state.pool)
     .await?;
 
+    // Keep the WS membership cache in sync (C3 isolation).
+    state.ws_pool.add_user_channel(&invitee_id, &channel_id);
+
     sqlx::query("UPDATE invitations SET status = 'accepted' WHERE id = ?")
         .bind(&invitation_id)
         .execute(&state.pool)
