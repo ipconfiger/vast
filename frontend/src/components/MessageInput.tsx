@@ -7,6 +7,7 @@ import { useChannelMembers, type MemberResponse } from '../api/channels'
 import { getUserDisplayName } from '../utils/user'
 import { CodeSnippetInput } from './CodeSnippetInput'
 import { VoteBuilderModal } from './VoteBuilderModal'
+import { toast } from '../stores/toastStore'
 
 type CmdRole = 'owner' | 'admin' | 'member'
 
@@ -63,9 +64,17 @@ export function MessageInput({ channelId, currentRole, quotingMessage, onCancelQ
     }
   }, [text])
 
-  const handleSend = () => {
+  const handleSend = async () => {
     const trimmed = text.trim()
     if (!trimmed || sendMessage.isPending) return
+
+    const clearInput = () => {
+      setText('')
+      onCancelQuote?.()
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto'
+      }
+    }
 
     if (trimmed.startsWith('/')) {
       const parts = trimmed.slice(1).split(/\s+/)
@@ -77,24 +86,25 @@ export function MessageInput({ channelId, currentRole, quotingMessage, onCancelQ
       if (cmd === 'vote') {
         setVoteInitialTitle(args)
         setVoteModalOpen(true)
-        setText('')
-        if (textareaRef.current) {
-          textareaRef.current.style.height = 'auto'
-        }
+        clearInput()
         return
       }
 
-      const quoteId = quotingMessage?.id != null ? Number(quotingMessage.id) : undefined
-      sendMessage.mutate({ msg_type: 'text', payload: { _command: true, command: cmd, args }, quoted_message_id: quoteId })
+      // Slash commands do not carry a quoted_message_id (semantically meaningless).
+      try {
+        await sendMessage.mutateAsync({ msg_type: 'text', payload: { _command: true, command: cmd, args } })
+        clearInput()
+      } catch {
+        toast.error('发送失败，请重试')
+      }
     } else {
-      const quoteId = quotingMessage?.id != null ? Number(quotingMessage.id) : undefined
-      sendMessage.mutate({ msg_type: 'text', payload: { text: trimmed }, quoted_message_id: quoteId })
-    }
-    setText('')
-    onCancelQuote?.()
-
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
+      const quoteId = quotingMessage ? Number(quotingMessage.id) : undefined
+      try {
+        await sendMessage.mutateAsync({ msg_type: 'text', payload: { text: trimmed }, quoted_message_id: quoteId })
+        clearInput()
+      } catch {
+        toast.error('发送失败，请重试')
+      }
     }
   }
 

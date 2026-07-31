@@ -18,6 +18,7 @@ Architecture:
 import asyncio
 import json
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -122,7 +123,10 @@ async def on_mention(
 async def main(config_path: str) -> None:
     """Load config and start one connection loop per bot."""
     with open(config_path) as f:
-        config = yaml.safe_load(f)
+        raw_text = f.read()
+    # Expand ${VAR} references against the environment so secrets can be
+    # supplied via env vars instead of being committed to the config file.
+    config = yaml.safe_load(os.path.expandvars(raw_text))
 
     vast = config["vast"]
     vast_url = vast["url"].rstrip("/").removesuffix("/ws/bot") + "/ws/bot"

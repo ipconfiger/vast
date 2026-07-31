@@ -36,4 +36,10 @@ db/*.db
 
 # === Logs ===
 *.log
+
+# === Python tools ===
 tools/__pycache__/
+tools/bot-connector.yaml
+
+# === Deploy: 环境连接配置(含服务器信息, 勿提交) ===
+deploy/.env.deploy

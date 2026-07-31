@@ -44,6 +44,11 @@ export function ChannelListPage() {
   const [showSettings, setShowSettings] = useState(false)
   const [quotingMessage, setQuotingMessage] = useState<Message | null>(null)
 
+  // Clear quote state when switching channels to avoid cross-channel send.
+  useEffect(() => {
+    setQuotingMessage(null)
+  }, [channelId])
+
   return (
     <div className="channel-page flex h-screen bg-zinc-950 text-zinc-100">
       <ChannelSidebarToggle />

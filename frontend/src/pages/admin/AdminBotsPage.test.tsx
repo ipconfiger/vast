@@ -52,6 +52,7 @@ function makeBot(over: Partial<Bot> = {}): Bot {
     name: 'hermes',
     display_name: 'Hermes Assistant',
     api_url: 'https://hermes.example.com',
+    connection_mode: 'http',
     system_prompt: 'You are a helpful assistant.',
     model: 'hermes',
     is_active: true,

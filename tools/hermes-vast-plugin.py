@@ -76,7 +76,11 @@ class VASTAdapter:
     async def connect(self) -> None:
         """Open the WebSocket to VAST and start the read loop."""
         url = f"{self._cfg.ws_url}?key={self._cfg.connection_key}"
-        log.info("Connecting to VAST: %s", url[:80])
+        log.info(
+            "Connecting to VAST: %s (key=%s...)",
+            self._cfg.ws_url,
+            self._cfg.connection_key[:8],
+        )
 
         self._ws = await websockets.connect(
             url,
@@ -97,18 +101,20 @@ class VASTAdapter:
 
     async def _read_loop(self) -> None:
         """Continuously read events from VAST."""
-        while self._connected and self._ws:
-            try:
+        try:
+            while self._connected and self._ws:
                 raw = await self._ws.recv()
                 event = json.loads(raw)
                 await self._handle_event(event)
-            except websockets.ConnectionClosed:
-                log.warning("VAST connection closed")
-                self._connected = False
-                break
-            except Exception:
-                log.exception("Error in VAST read loop")
-                break
+        except websockets.ConnectionClosed:
+            log.warning("VAST connection closed")
+        except Exception:
+            log.exception("Error in VAST read loop")
+        finally:
+            # Always reset connection state so send() sees the dead
+            # connection instead of writing to a half-closed socket.
+            self._connected = False
+            self._ws = None
 
     async def _handle_event(self, event: dict) -> None:
         """Dispatch incoming VAST events."""

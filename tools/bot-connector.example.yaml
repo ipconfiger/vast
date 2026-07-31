@@ -1,7 +1,13 @@
-# VAST Bot Connector — configuration file
+# VAST Bot Connector — configuration TEMPLATE
 # =============================================================================
-# Place this file alongside bot-connector.py and run:
-#   python3 bot-connector.py --config bot-connector.yaml
+# This is a template. To use it:
+#   1. Copy to bot-connector.yaml (which is gitignored):
+#        cp tools/bot-connector.example.yaml tools/bot-connector.yaml
+#   2. Fill in your real values, OR reference environment variables with
+#      ${VAR} syntax, e.g.  api_key: "${OPENAI_API_KEY}"
+#      The connector expands ${VAR} against your environment before parsing.
+#   3. Run:
+#        python3 bot-connector.py --config bot-connector.yaml
 # =============================================================================
 
 # -- VAST server connection ---------------------------------------------------

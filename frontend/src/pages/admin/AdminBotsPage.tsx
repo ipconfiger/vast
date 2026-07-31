@@ -481,6 +481,7 @@ function BotFormModal({
           </div>
 
           {connectionMode === 'http' && (
+          <>
           <div>
             <label
               htmlFor="bot-api-url"
@@ -523,6 +524,7 @@ function BotFormModal({
               </p>
             )}
           </div>
+          </>
           )}
 
           <div>
